@@ -22,10 +22,13 @@
  * Every response uses the { data, fetchedAt, isDemo } envelope.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config/env.ts';
 import type { Db } from '../db/db.ts';
+import { getInstrument, listInstruments } from '../db/repoReference.ts';
 import { listStrategies, listConditions, listBacktests, getStrategy } from '../db/repoOps.ts';
 import type { ProviderRegistry } from '../providers/registry.ts';
+import type { Interval } from '../providers/types.ts';
 import { Router, envelope, requireAdmin, type HandlerResult, type RequestContext } from './http.ts';
 import { AppError } from '../lib/errors.ts';
 import { SUPPORTED_TIMEFRAMES, type Timeframe } from '../lib/time.ts';
@@ -38,6 +41,21 @@ import {
   listInstrumentsApi,
   listMarketsApi,
 } from '../services/marketDataService.ts';
+import {
+  evaluateInstrument,
+  evaluateStrategy,
+  getStrategyDefinition,
+  STRATEGY_DEFINITIONS,
+} from '../services/strategyEngine.ts';
+import type { InstrumentDecision, CombinationConfig, StopLossMode } from '../lib/strategyTypes.ts';
+import {
+  deleteStrategyPreset,
+  getUserStrategyConfig,
+  listStrategyPresets,
+  saveStrategyPreset,
+  saveUserStrategyConfig,
+  type StoredUserStrategyConfig,
+} from '../db/repoStrategy.ts';
 import { scan } from '../services/scanner.ts';
 import { generateOpportunities, listOpportunitiesApi, SCORE_DISCLAIMER } from '../services/opportunities.ts';
 import { generateDailyReport, listReportHistory } from '../services/reports.ts';
@@ -404,6 +422,251 @@ export function buildRouter(deps: RouterDeps): Router {
     const conditions = listConditions(db, row.id);
     const stored = listBacktests(db, row.id, 10, 0);
     return ok({ ...JSON.parse(row.config_json), id: row.id, name: row.name, conditions, recentBacktests: stored.items.length });
+  });
+
+  // ── Strategy selection & autonomous intelligence ────────────────────────
+  router.get('/api/strategies/definitions', () => {
+    const defs = STRATEGY_DEFINITIONS.map((d) => ({
+      id: d.id,
+      name: d.name,
+      category: d.category,
+      description: d.description,
+      timeframes: d.timeframes,
+      parameters: d.parameters,
+      defaultStopLoss: d.defaultStopLoss,
+      defaultTargets: d.defaultTargets,
+      rationale: d.rationale,
+    }));
+    return ok(defs, { meta: { count: defs.length } });
+  });
+
+  router.get('/api/strategies/definitions/:id', (ctx) => {
+    const def = getStrategyDefinition(ctx.params.id);
+    if (!def) throw new AppError('NOT_FOUND', `Unknown strategy "${ctx.params.id}"`);
+    return ok(def);
+  });
+
+  router.post('/api/strategies/evaluate', async (ctx) => {
+    const v = validatorFromBody((ctx.body ?? {}) as Record<string, unknown>);
+    const instrumentId = v.string('instrumentId', { required: true, maxLength: 64 })!;
+    const timeframe = v.string('timeframe', { required: true, maxLength: 10 })!;
+    const strategyId = v.string('strategyId', { required: true, maxLength: 64 })!;
+    v.throwIfInvalid();
+
+    const def = getStrategyDefinition(strategyId);
+    if (!def) throw new AppError('NOT_FOUND', `Unknown strategy "${strategyId}"`);
+    if (!def.timeframes.includes(timeframe)) {
+      throw new AppError('VALIDATION_ERROR', `Timeframe "${timeframe}" not supported by strategy "${strategyId}"`);
+    }
+
+    const instrument = getInstrument(db, instrumentId);
+    if (!instrument) throw new AppError('NOT_FOUND', `Unknown instrument "${instrumentId}"`);
+
+    const candlesResp = await getCandlesApi(db, registry, instrumentId, timeframe as Interval, { limit: 500 });
+    const candles = candlesResp.candles.map((c) => ({ ts: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+    const quotes = await getQuotesApi(db, registry, config, [instrumentId]);
+    const quote = quotes[0]?.quote ?? { lastPrice: 0 };
+
+    const now = Date.now();
+    const result = evaluateStrategy(def, candles, quote, {}, timeframe, now);
+    return ok(result, { isDemo: result.isDemo });
+  });
+
+  router.post('/api/strategies/evaluate-instrument', async (ctx) => {
+    const v = validatorFromBody((ctx.body ?? {}) as Record<string, unknown>);
+    const instrumentId = v.string('instrumentId', { required: true, maxLength: 64 })!;
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+
+    const instrument = getInstrument(db, instrumentId);
+    if (!instrument) throw new AppError('NOT_FOUND', `Unknown instrument "${instrumentId}"`);
+
+    const stored = getUserStrategyConfig(db, userId);
+    const timeframes = stored?.timeframes ?? ['1h'];
+    const primaryTimeframe = timeframes[0]!;
+
+    const candlesResp = await getCandlesApi(db, registry, instrumentId, primaryTimeframe as Interval, { limit: 500 });
+    const candles = candlesResp.candles.map((c) => ({ ts: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+    const quotes = await getQuotesApi(db, registry, config, [instrumentId]);
+    const quote = quotes[0]?.quote ?? { lastPrice: 0 };
+
+    const userConfig = stored
+      ? {
+          combination: stored.combination,
+          strategies: stored.strategies,
+          timeframes: stored.timeframes,
+          minRiskReward: stored.minRiskReward,
+        }
+      : {
+          combination: { operator: 'OR', minConfirmations: 1, requireHigherTimeframeConfirmation: false },
+          strategies: STRATEGY_DEFINITIONS.map((d) => ({
+            strategyId: d.id,
+            enabled: false,
+            parameters: Object.fromEntries(d.parameters.map((p) => [p.id, p.default])),
+            stopLoss: d.defaultStopLoss,
+            targets: d.defaultTargets,
+          })),
+          timeframes: ['1h'],
+          minRiskReward: 1,
+        };
+
+    const now = Date.now();
+    const decision = evaluateInstrument(
+      instrument.id,
+      instrument.symbol,
+      instrument.market_category,
+      instrument.exchange,
+      candles,
+      quote,
+      userConfig as any,
+      now,
+    );
+    return ok(decision, { isDemo: decision.source.isDemo });
+  });
+
+  router.get('/api/strategies/user-config', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    const stored = getUserStrategyConfig(db, userId);
+    if (!stored) {
+      return ok(null, { meta: { exists: false } });
+    }
+    return ok(stored, { meta: { exists: true } });
+  });
+
+  router.post('/api/strategies/user-config', async (ctx) => {
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const v = validatorFromBody(body);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    const combinationRaw = body.combination as Record<string, unknown> | undefined;
+    const timeframesRaw = body.timeframes;
+    const strategiesRaw = body.strategies;
+    const marketsRaw = body.markets;
+    const instrumentsRaw = body.instruments;
+    v.throwIfInvalid();
+
+    const combination = (combinationRaw && typeof combinationRaw === 'object'
+      ? { operator: combinationRaw.operator === 'AND' ? 'AND' : 'OR', minConfirmations: Number(combinationRaw.minConfirmations) ?? 1, requireHigherTimeframeConfirmation: Boolean(combinationRaw.requireHigherTimeframeConfirmation) }
+      : { operator: 'OR', minConfirmations: 1, requireHigherTimeframeConfirmation: false }) as CombinationConfig;
+
+    const config: StoredUserStrategyConfig = {
+      userId,
+      combination,
+      timeframes: Array.isArray(timeframesRaw) ? timeframesRaw.map(String) : ['1h'],
+      markets: Array.isArray(marketsRaw) ? marketsRaw.map(String) : [],
+      instruments: Array.isArray(instrumentsRaw) ? instrumentsRaw.map(String) : [],
+      minRiskReward: typeof body.minRiskReward === 'number' ? body.minRiskReward : 1,
+      minLiquidity: 'MEDIUM',
+      maxSpreadBps: 10,
+      updatedAt: new Date().toISOString(),
+      strategies: Array.isArray(strategiesRaw) ? (strategiesRaw as unknown[]).map((s) => {
+        const row = s as Record<string, unknown>;
+        return {
+          strategyId: String(row.strategyId ?? ''),
+          enabled: Boolean(row.enabled),
+          parameters: (row.parameters && typeof row.parameters === 'object' ? row.parameters : {}) as Record<string, number | boolean>,
+          stopLoss: row.stopLoss && typeof row.stopLoss === 'object' ? ({ mode: String((row.stopLoss as { mode?: unknown }).mode) as StopLossMode, value: Number((row.stopLoss as { value?: unknown }).value) ?? 1 } as { mode: StopLossMode; value: number }) : { mode: 'FIXED_PCT', value: 1 },
+          targets: row.targets && typeof row.targets === 'object' ? (row.targets as { target1Pct: number; target2Pct: number }) : { target1Pct: 1, target2Pct: 2 },
+        };
+      }) : [],
+    };
+    saveUserStrategyConfig(db, config);
+    return ok(config, { meta: { saved: true } });
+  });
+
+  router.get('/api/strategies/presets', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    const presets = listStrategyPresets(db, userId);
+    return ok(presets, { meta: { count: presets.length } });
+  });
+
+  router.post('/api/strategies/presets', async (ctx) => {
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const v = validatorFromBody(body);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    const name = v.string('name', { required: true, maxLength: 100 })!;
+    const id = v.string('id', { required: false, maxLength: 64 }) ?? `preset-${randomUUID().slice(0, 8)}`;
+    v.throwIfInvalid();
+
+    const config = getUserStrategyConfig(db, userId);
+    if (!config) throw new AppError('VALIDATION_ERROR', 'No user strategy config to save as preset');
+
+    const preset: import('../lib/strategyTypes.ts').UserStrategyPreset = {
+      id,
+      name,
+      userId,
+      combination: config.combination,
+      strategies: config.strategies,
+      markets: config.markets,
+      instruments: config.instruments,
+      timeframes: config.timeframes,
+      minRiskReward: config.minRiskReward,
+      minLiquidity: config.minLiquidity,
+      maxSpreadBps: config.maxSpreadBps,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    saveStrategyPreset(db, preset);
+    return { status: 201, body: preset };
+  });
+
+  router.add('DELETE', '/api/strategies/presets/:id', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    const deleted = deleteStrategyPreset(db, ctx.params.id, userId);
+    if (!deleted) throw new AppError('NOT_FOUND', `Preset "${ctx.params.id}" not found for user`);
+    return ok({ deleted: true });
+  });
+
+  router.get('/api/strategies/scan', async (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    const market = v.enum('market', ['ALL', 'INDIAN_EQUITIES', 'INDIAN_INDICES', 'IN_CURRENCY_DERIVATIVES', 'INTERNATIONAL_EQUITIES', 'INTERNATIONAL_INDICES', 'OTHER'] as const, { fallback: 'ALL' });
+    const limit = v.int('limit', { min: 1, max: 100, fallback: 50 });
+    v.throwIfInvalid();
+
+    const stored = getUserStrategyConfig(db, userId);
+    const userConfig = stored
+      ? { combination: stored.combination, strategies: stored.strategies, timeframes: stored.timeframes, minRiskReward: stored.minRiskReward }
+      : { combination: { operator: 'OR', minConfirmations: 1, requireHigherTimeframeConfirmation: false }, strategies: [], timeframes: ['1h'], minRiskReward: 1 };
+
+    const instruments = listInstruments(db, {
+      market: market === 'ALL' ? undefined : market,
+      limit: 200,
+      offset: 0,
+    });
+
+    const results: InstrumentDecision[] = [];
+    const now = Date.now();
+    const primaryTimeframe = userConfig.timeframes[0] ?? '1h';
+
+    for (const inst of instruments.items) {
+      if (!inst.is_active) continue;
+      const candlesResp = await getCandlesApi(db, registry, inst.id, primaryTimeframe as Interval, { limit: 400 });
+      const candles = candlesResp.candles.map((c) => ({ ts: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+      const quotes = await getQuotesApi(db, registry, config, [inst.id]);
+      const quote = quotes[0]?.quote ?? { lastPrice: 0 };
+      if (candles.length < 20) continue;
+      const decision = evaluateInstrument(
+        inst.id,
+        inst.symbol,
+        inst.market_category,
+        inst.exchange,
+        candles,
+        quote,
+        userConfig as any,
+        now,
+      );
+      if (decision.primaryDecision !== 'NO_TRADE') results.push(decision);
+    }
+
+    results.sort((a, b) => b.strategyQualityScore - a.strategyQualityScore);
+    const page = results.slice(0, limit);
+    return ok(page, { meta: { scanned: results.length, returned: page.length, timeframe: primaryTimeframe } });
   });
 
   // Expose the envelope helper for tests.

@@ -8,6 +8,12 @@ import ChartTerminal from '@/pages/ChartTerminal';
 import Intelligence from '@/pages/Intelligence';
 import Reports from '@/pages/Reports';
 import StrategyLab from '@/pages/StrategyLab';
+import StrategyCentre from '@/pages/StrategyCentre';
+import StrategyBuilder from '@/pages/StrategyBuilder';
+import AutonomousAnalysis from '@/pages/AutonomousAnalysis';
+import StrategyComparisonPage from '@/pages/StrategyComparisonPage';
+import PersonalizedScannerPage from '@/pages/PersonalizedScannerPage';
+import AnalysisHistory from '@/pages/AnalysisHistory';
 import Backtesting from '@/pages/Backtesting';
 import RiskCenter from '@/pages/RiskCenter';
 import DataCenter from '@/pages/DataCenter';
@@ -26,6 +32,12 @@ const router = createBrowserRouter([
       { path: 'intelligence', element: <Intelligence /> },
       { path: 'reports', element: <Reports /> },
       { path: 'strategy-lab', element: <StrategyLab /> },
+      { path: 'strategy-centre', element: <StrategyCentre /> },
+      { path: 'strategy-builder', element: <StrategyBuilder /> },
+      { path: 'autonomous-analysis', element: <AutonomousAnalysis /> },
+      { path: 'strategy-comparison', element: <StrategyComparisonPage /> },
+      { path: 'personalized-scanner', element: <PersonalizedScannerPage /> },
+      { path: 'analysis-history', element: <AnalysisHistory /> },
       { path: 'backtesting', element: <Backtesting /> },
       { path: 'risk', element: <RiskCenter /> },
       { path: 'data', element: <DataCenter /> },

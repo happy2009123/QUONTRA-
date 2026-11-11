@@ -6,7 +6,7 @@ export class RateLimiter {
   private readonly capacity: number;
   private readonly refillPerMs: number;
   private usedInWindow = 0;
-  private windowStart = Date.now();
+  private windowStart = 0;
 
   private readonly perMinute: number;
   private readonly now: () => number;
@@ -17,7 +17,9 @@ export class RateLimiter {
     this.capacity = Math.max(1, perMinute);
     this.tokens = this.capacity;
     this.refillPerMs = perMinute / 60_000;
-    this.lastRefill = now();
+    const start = now();
+    this.lastRefill = start;
+    this.windowStart = start;
   }
 
   /** Waits until a token is available, then consumes it. */
