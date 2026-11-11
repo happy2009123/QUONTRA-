@@ -24,6 +24,8 @@ import {
   type StrategyResult,
 } from '@/lib/strategyEngine';
 import type { Candle, Timeframe } from '@/models';
+import { PriceChart } from '@/components/charts/PriceChart';
+import { DataBadge } from '@/components/ui';
 
 function conditionChip(c: { description: string; passed: boolean }) {
   return (
@@ -69,8 +71,9 @@ export default function AutonomousAnalysis() {
   const [instrumentId, setInstrumentId] = useState<string>('');
   const [timeframe, setTimeframe] = useState<Timeframe>('1h');
 const [decision, setDecision] = useState<InstrumentDecision | null>(null);
-const [error, setError] = useState<string | null>(null);
-const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [candlesState, setCandlesState] = useState<Candle[]>([]);
 
 const selectedInstrument = instruments.data?.find((i) => i.id === instrumentId) ?? null;
 
@@ -81,9 +84,9 @@ const runAnalysis = useCallback(async () => {
   try {
     const candlesResp = await api.market.getCandles(instrumentId, timeframe, 400);
     const quotesResp = await api.market.getQuotes([instrumentId]);
-    const candles: Candle[] = candlesResp.data.candles.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
     const quote = quotesResp.data[0]?.quote ?? { lastPrice: 0, instrumentId };
-
+    const candles: Candle[] = candlesResp.data.candles.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+    setCandlesState(candles);
     const userConfig = {
         combination: { operator: 'OR' as const, minConfirmations: 1, requireHigherTimeframeConfirmation: false },
       strategies: STRATEGY_DEFINITIONS.map((d) => ({
@@ -159,9 +162,18 @@ const runAnalysis = useCallback(async () => {
             <Card><ErrorState message={instruments.error} onRetry={instruments.reload} /></Card>
           ) : selectedInstrument ? (
             <Card title={`Chart — ${selectedInstrument.symbol}`} subtitle={`Market: ${selectedInstrument.market} · Exchange: ${selectedInstrument.exchange}`}>
-              <div className="h-64 flex items-center justify-center rounded border border-line-soft bg-panel">
-                <span className="text-mut">Chart panel — select instrument and run analysis to view candles</span>
-              </div>
+              <PriceChart
+                candles={candlesState}
+                style="CANDLES"
+                indicators={['EMA_9', 'EMA_20', 'SMA_20', 'VWAP', 'RSI', 'MACD']}
+                className="mb-2"
+                minHeight={400}
+              />
+              <DataBadge
+                freshness="DEMO"
+                source={{ provider: 'QUANTORA', origin: 'SIMULATED', isDemo: true, reliability: 'PROVISIONAL' }}
+                updatedAt={new Date().toISOString()}
+              />
             </Card>
           ) : (
             <EmptyState title="Select an instrument" description="Choose an instrument from the dropdown to begin autonomous analysis." />
