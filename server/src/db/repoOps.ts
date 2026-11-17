@@ -419,15 +419,24 @@ export function getPortfolioSummary(db: Db, userId: string) {
     .prepare('SELECT cash_balance, used_capital FROM paper_wallets WHERE id = ?')
     .get(userId) as { cash_balance: number; used_capital: number } | undefined;
 
-  const aw = wallet ? wallet.cash_balance : 1000000;
+  const cash = wallet ? wallet.cash_balance : 1000000;
   const uq = wallet ? wallet.used_capital : 0;
 
+  // Positions are marked to the last stored market value — equity is cash plus
+  // market value of open positions (cash was already reduced on every buy).
+  const pos = db
+    .prepare(
+      `SELECT COALESCE(SUM(market_value), 0) AS mv, COALESCE(SUM((market_value - avg_price * quantity)), 0) AS upnl
+       FROM paper_positions WHERE account_id = ? AND quantity > 0`,
+    )
+    .get(userId) as { mv: number; upnl: number };
+
   return {
-    available_capital: aw,
+    available_capital: cash,
     used_capital: uq,
-    total_portfolio_value: account ? account.total_portfolio_value : 1000000,
+    total_portfolio_value: cash + pos.mv,
     realised_pnl: account ? account.realised_pnl : 0,
-    unrealised_pnl: account ? account.unrealised_pnl : 0,
+    unrealised_pnl: pos.upnl,
   };
 }
 
