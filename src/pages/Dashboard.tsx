@@ -7,7 +7,9 @@ import {
   DataBadge,
   EmptyState,
   ErrorState,
+  Input,
   PageHeader,
+  Select,
   SegmentedControl,
   Skeleton,
 } from '@/components/ui';
@@ -90,6 +92,13 @@ export default function Dashboard() {
           </div>
 
           <OpportunitiesSection />
+        </div>
+
+        <OrderPlacementSection />
+        <div className="grid min-w-0 gap-4 md:grid-cols-2">
+          <div className="col-span-2 text-right">
+            <span className="text-[10px] text-mut-2">Simulated trading only</span>
+          </div>
         </div>
 
         <DashboardSideRail />
@@ -482,5 +491,156 @@ function OpportunityRow({ opportunity }: { opportunity: OpportunitySummary }) {
         </span>
       </div>
     </li>
+  );
+}
+
+function OrderPlacementSection() {
+  const [direction, setDirection] = useState<'BUY' | 'SELL'>('BUY');
+  const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET');
+  const [quantity, setQuantity] = useState(1);
+  const [price, setPrice] = useState(0);
+  const [instrumentId, setInstrumentId] = useState('eq-reliance');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const instruments = [
+    { value: 'eq-reliance', label: 'RELIANCE EQ' },
+    { value: 'eq-tcs', label: 'TCS EQ' },
+    { value: 'in currency', label: 'USD/INR' },
+  ] as const;
+
+  const handlePlaceOrder = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/paper-order', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userId: 'desk@quantora.demo',
+          instrumentId,
+          direction,
+          orderType,
+          quantity: Number(quantity),
+          price: orderType === 'LIMIT' ? Number(price) : undefined,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setQuantity(1);
+        if (orderType === 'LIMIT') setPrice(0);
+        setError(null);
+        // Refresh portfolio summary
+        const portfolioResp = await fetch('/api/paper-portfolio', {
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const portfolioData = await portfolioResp.json();
+        // Show success
+        setError(`Order placed: ${data.orderId}. ${data.direction} ${data.quantity} @ ₹${data.price?.toLocaleString() || '0'}. Available: ₹${portfolioData.available_capital?.toLocaleString() || '0'}`);
+        setTimeout(() => setError(null), 5000);
+      } else {
+        setError(data.error || 'Failed to place order');
+      }
+    } catch (e) {
+      setError('Network error placing order');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card
+      title="Paper Order Placement"
+      subtitle="Simulated trading — no real broker connection"
+      actions={
+        <>
+          <Button
+            variant="primary"
+            onClick={handlePlaceOrder}
+            loading={loading}
+            icon={
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            }
+          >
+            {loading ? 'Sending...' : 'Place Order'}
+          </Button>
+          <Button variant="ghost" onClick={() => setDirection('BUY')}>
+            BUY
+          </Button>
+          <Button variant="ghost" onClick={() => setDirection('SELL')}>
+            SELL
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-4">
+        <div>
+          <label className="text-[11px] uppercase text-mut-2 mb-1">Instrument</label>
+          <Select
+            value={instrumentId}
+            onChange={setInstrumentId}
+            label="Instrument"
+            options={instruments.map((i) => ({ value: i.value, label: i.label }))}
+            size="sm"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase text-mut-2 mb-1">Direction</label>
+          <SegmentedControl
+            options={[{ value: 'BUY', label: 'BUY' }, { value: 'SELL', label: 'SELL' }]}
+            value={direction}
+            onChange={setDirection}
+            label="Direction"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase text-mut-2 mb-1">Order Type</label>
+          <SegmentedControl
+            options={[
+              { value: 'MARKET', label: 'Market' },
+              { value: 'LIMIT', label: 'Limit' },
+            ]}
+            value={orderType}
+            onChange={setOrderType}
+            label="Order Type"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase text-mut-2 mb-1">Quantity</label>
+          <Input
+            value={quantity}
+            onChange={(e) => setQuantity(Number(e.target.value) || 1)}
+            type="number"
+            placeholder="Qty"
+          />
+        </div>
+        {orderType === 'LIMIT' && (
+          <div>
+            <label className="text-[11px] uppercase text-mut-2 mb-1">Limit Price</label>
+            <Input
+              value={price}
+              onChange={(e) => setPrice(Number(e.target.value) || 0)}
+              type="number"
+              placeholder="Price"
+            />
+          </div>
+        )}
+      </div>
+      {error && (
+        <ErrorState message={error} onRetry={() => {}} />
+      )}
+    </Card>
   );
 }

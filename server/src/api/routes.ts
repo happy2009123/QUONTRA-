@@ -56,6 +56,17 @@ import {
   saveUserStrategyConfig,
   type StoredUserStrategyConfig,
 } from '../db/repoStrategy.ts';
+import {
+  getOpenPositions,
+  getOrderHistory,
+  getPaperAccount,
+  getPortfolioSummary,
+  getTransactionHistory,
+  getWalletBalance,
+  resetPaperAccount,
+  upsertPaperAccount,
+  type PaperTransaction,
+} from '../db/repoOps.ts';
 import { scan } from '../services/scanner.ts';
 import { generateOpportunities, listOpportunitiesApi, SCORE_DISCLAIMER } from '../services/opportunities.ts';
 import { generateDailyReport, listReportHistory } from '../services/reports.ts';
@@ -621,6 +632,194 @@ export function buildRouter(deps: RouterDeps): Router {
     if (!deleted) throw new AppError('NOT_FOUND', `Preset "${ctx.params.id}" not found for user`);
     return ok({ deleted: true });
   });
+
+  // ── Paper Trading ──────────────────────────────────────────────────────
+  router.get('/api/paper-account', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    const account = getPaperAccount(db, userId);
+    if (!account) return ok(upsertPaperAccount(db, userId));
+    return ok(account);
+  });
+
+  router.get('/api/paper-portfolio', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    return ok(getPortfolioSummary(db, userId));
+  });
+
+  router.get('/api/paper-positions', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    return ok(getOpenPositions(db, userId));
+  });
+
+  router.get('/api/paper-orders', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    return ok(getOrderHistory(db, userId));
+  });
+
+  router.get('/api/paper-transactions', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    return ok(getTransactionHistory(db, userId));
+  });
+
+  router.post('/api/paper-account-reset', async (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    resetPaperAccount(db, userId);
+    return ok({ reset: true, message: 'Paper account reset. All positions closed, transactions cleared, balances restored to initial capital.' });
+  });
+
+  router.get('/api/paper-wallet', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    const wallet = getWalletBalance(db, userId);
+    return ok(wallet);
+  });
+
+  router.get('/api/paper-trades', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    const rows = db
+      .prepare('SELECT * FROM paper_trades WHERE instrument_id IS NOT NULL ORDER BY opened_at DESC LIMIT 50')
+      .all(userId) as unknown as PaperTransaction[];
+    return ok({ trades: rows });
+  });
+
+  router.get('/api/paper-account-full', (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    const account = getPaperAccount(db, userId);
+    const wallet = getWalletBalance(db, userId);
+    const positions = getOpenPositions(db, userId);
+    const orders = getOrderHistory(db, userId);
+    const transactions = getTransactionHistory(db, userId);
+    return ok({ account, wallet, positions, orders, transactions });
+  });
+
+  // ── Order Placement ──────────────────────────────────────────────────────
+  router.post('/api/paper-order', async (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+
+    const { instrumentId, direction, orderType, quantity, price } = ctx.body as {
+      instrumentId: string;
+      direction: 'BUY' | 'SELL';
+      orderType: 'MARKET' | 'LIMIT';
+      quantity: number;
+      price: number;
+    };
+
+    // Get account state
+    const account = getPaperAccount(db, userId);
+    if (!account) throw new AppError('NOT_FOUND', 'Paper account not found');
+
+    // Validate balance
+    const portfolio = getPortfolioSummary(db, userId);
+    const capitalNeeded = (price || 0) * quantity;
+
+    if (direction === 'BUY' && portfolio.available_capital < capitalNeeded) {
+      throw new AppError('INSUFFICIENT_BALANCE', 'Not enough available capital');
+    }
+    if (direction === 'SELL') {
+      const positions = getOpenPositions(db, userId);
+      if (!positions.some(p => p.instrumentId === instrumentId)) {
+        throw new AppError('INSUFFICIENT_POSITION', 'Not enough position to sell');
+      }
+    }
+
+    // Calculate charges
+    const brokerage = (price || 0) * quantity * 0.0005; // 0.05%
+    const totalCost = (price || 0) * quantity + brokerage;
+
+    // Create order
+    const orderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+
+    // Insert order
+    db.prepare(
+      `INSERT INTO paper_orders (id, account_id, instrument_id, direction, quantity, price, status, order_type, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, PENDING, ?, ?)`,
+    ).run(orderId, userId, instrumentId, direction, quantity, price || 0, orderType, now);
+
+    // Deduct from available capital
+    db.prepare(
+      `UPDATE paper_accounts SET available_capital = available_capital - ? WHERE user_id = ?`,
+    ).run(totalCost, userId);
+
+    // Create transaction record
+    db.prepare(
+      `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(`tx-${Date.now()}`, userId, direction === 'BUY' ? 'BUY' : 'SELL', totalCost, 
+      direction === 'BUY' ? 'Market purchase' : 'Market sale', orderId, now);
+
+    // Recalculate portfolio summary
+    getPortfolioSummary(db, userId); // recalculate
+
+    return ok({
+      orderId,
+      status: 'PENDING',
+      direction,
+      instrumentId,
+      quantity,
+      price: price || 0,
+      orderType,
+      totalCost,
+      brokerage,
+      created_at: now,
+    });
+  });
+
+  router.post('/api/paper-cancel', async (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    const { orderId } = ctx.body as { orderId: string };
+    v.throwIfInvalid();
+
+    // Find the order
+    const order = db
+      .prepare('SELECT * FROM paper_orders WHERE id = ? AND account_id = ?')
+      .get(orderId, userId) as PaperOrder | undefined;
+    if (!order) throw new AppError('NOT_FOUND', 'Order not found');
+    if (order.status !== 'PENDING') throw new AppError('INVALID_STATUS', 'Only pending orders can be cancelled');
+
+    // Free up the capital
+    const totalCost = (order.price || 0) * order.quantity;
+
+    // Update order status
+    db.prepare(
+      `UPDATE paper_orders SET status = CANCELLED WHERE id = ?`,
+    ).run(orderId);
+
+    // Return capital
+    db.prepare(
+      `UPDATE paper_accounts SET available_capital = available_capital + ? WHERE user_id = ?`,
+    ).run(totalCost, userId);
+
+    // Create cancellation transaction
+    db.prepare(
+      `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(`tx-cancel-${Date.now()}`, userId, 'CANCELLATION', totalCost, 'Order cancelled', orderId, new Date().toISOString());
+
+    return ok({ orderId, status: 'CANCELLED', capitalReturned: totalCost });
+  });
+
+  router.get('/api/strategies/scan', async (ctx) => {
 
   router.get('/api/strategies/scan', async (ctx) => {
     const v = queryValidator(ctx.query);

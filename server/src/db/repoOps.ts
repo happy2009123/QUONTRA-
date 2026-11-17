@@ -290,3 +290,199 @@ export function listSystemLogs(db: Db, options: { level?: string; limit?: number
   }
   return db.prepare('SELECT * FROM system_logs ORDER BY id DESC LIMIT ?').all(limit) as unknown as SystemLogRow[];
 }
+
+export interface PaperAccount {
+  user_id: string;
+  initial_capital: number;
+  available_capital: number;
+  used_capital: number;
+  total_portfolio_value: number;
+  realised_pnl: number;
+  unrealised_pnl: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaperWallet {
+  cash_balance: number;
+  used_capital: number;
+}
+
+export interface PaperPosition {
+  instrument_id: string;
+  quantity: number;
+  avg_price: number;
+  market_value: number;
+  unrealised_pnl: number;
+}
+
+export interface PaperOrder {
+  id: string;
+  direction: string;
+  quantity: number;
+  price: number;
+  status: string;
+  order_type: string;
+  created_at: string;
+}
+
+export interface PaperTransaction {
+  type: string;
+  amount: number;
+  description: string | null;
+  related_id: string | null;
+  created_at: string;
+}
+
+export function upsertPaperAccount(db: Db, userId: string): PaperAccount {
+  const now = new Date().toISOString();
+  // Use INSERT OR IGNORE approach: try insert, if exists then select
+  db.prepare(
+    `INSERT INTO paper_accounts (user_id, initial_capital, available_capital, used_capital,
+         total_portfolio_value, realised_pnl, unrealised_pnl, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(userId, 1000000, 1000000, 0, 1000000, 0, 0, now, now);
+
+  // Always return the account data (will be fresh insert or existing)
+  const row = db
+    .prepare('SELECT * FROM paper_accounts WHERE user_id = ?')
+    .get(userId) as {
+      user_id: string;
+      initial_capital: number;
+      available_capital: number;
+      used_capital: number;
+      total_portfolio_value: number;
+      realised_pnl: number;
+      unrealised_pnl: number;
+      created_at: string;
+      updated_at: string;
+    };
+  return {
+    user_id: row.user_id,
+    initial_capital: row.initial_capital,
+    available_capital: row.available_capital,
+    used_capital: row.used_capital,
+    total_portfolio_value: row.total_portfolio_value,
+    realised_pnl: row.realised_pnl,
+    unrealised_pnl: row.unrealised_pnl,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export function getPaperAccount(db: Db, userId: string): PaperAccount | null {
+  const row = db
+    .prepare('SELECT * FROM paper_accounts WHERE user_id = ?')
+    .get(userId) as PaperAccount | undefined;
+  if (!row) return null;
+  return {
+    user_id: row.user_id,
+    initial_capital: row.initial_capital,
+    available_capital: row.available_capital,
+    used_capital: row.used_capital,
+    total_portfolio_value: row.total_portfolio_value,
+    realised_pnl: row.realised_pnl,
+    unrealised_pnl: row.unrealised_pnl,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export function getWalletBalance(db: Db, userId: string): PaperWallet {
+  const wallet = db
+    .prepare('SELECT cash_balance, used_capital FROM paper_wallets WHERE id = ?')
+    .get(userId) as { cash_balance: number; used_capital: number } | undefined;
+  if (!wallet) {
+    // Wallet doesn't exist yet - create it linked to the account
+    // This can happen if account was created but wallet wasn't
+    db.prepare(
+      `INSERT INTO paper_wallets (id, cash_balance, used_capital) VALUES (?, ?, ?)`,
+    ).run(userId, 1000000, 0);
+    return { cash_balance: 1000000, used_capital: 0 };
+  }
+  return { cash_balance: wallet.cash_balance, used_capital: wallet.used_capital };
+}
+
+export function getPortfolioSummary(db: Db, userId: string) {
+  const account = db
+    .prepare('SELECT * FROM paper_accounts WHERE user_id = ?')
+    .get(userId) as {
+      initial_capital: number;
+      available_capital: number;
+      used_capital: number;
+      total_portfolio_value: number;
+      realised_pnl: number;
+      unrealised_pnl: number;
+    } | undefined;
+  const wallet = db
+    .prepare('SELECT cash_balance, used_capital FROM paper_wallets WHERE id = ?')
+    .get(userId) as { cash_balance: number; used_capital: number } | undefined;
+
+  const aw = wallet ? wallet.cash_balance : 1000000;
+  const uq = wallet ? wallet.used_capital : 0;
+
+  return {
+    available_capital: aw,
+    used_capital: uq,
+    total_portfolio_value: account ? account.total_portfolio_value : 1000000,
+    realised_pnl: account ? account.realised_pnl : 0,
+    unrealised_pnl: account ? account.unrealised_pnl : 0,
+  };
+}
+
+export function getOpenPositions(db: Db, userId: string): PaperPosition[] {
+  const rows = db
+    .prepare(
+      `SELECT instrument_id, quantity, avg_price, market_value, unrealised_pnl
+       FROM paper_positions WHERE account_id = ?`,
+    ).all(userId) as unknown as PaperPosition[];
+  return rows;
+}
+
+export function getOrderHistory(db: Db, userId: string): PaperOrder[] {
+  const rows = db
+    .prepare(
+      `SELECT id, direction, quantity, price, status, order_type, created_at
+       FROM paper_orders WHERE account_id = ? ORDER BY created_at DESC`,
+    ).all(userId) as unknown as PaperOrder[];
+  return rows;
+}
+
+export function getTransactionHistory(db: Db, userId: string): PaperTransaction[] {
+  const rows = db
+    .prepare(
+      `SELECT type, amount, description, related_id, created_at
+       FROM paper_transactions WHERE account_id = ? ORDER BY created_at DESC`,
+    ).all(userId) as unknown as PaperTransaction[];
+  return rows;
+}
+
+export function resetPaperAccount(db: Db, userId: string) {
+  const now = new Date().toISOString();
+  // Reset account state - this is a destructive operation
+  // In a real system, this would require admin confirmation
+  db.prepare(
+    `UPDATE paper_accounts SET available_capital = 1000000,
+         used_capital = 0,
+         total_portfolio_value = 1000000,
+         realised_pnl = 0,
+         unrealised_pnl = 0,
+         updated_at = ? WHERE user_id = ?`,
+  ).run(now, userId);
+
+  // Reset wallet
+  db.prepare(
+    `UPDATE paper_wallets SET cash_balance = 1000000, used_capital = 0 WHERE id = ?`,
+  ).run(userId);
+
+  // Close all open positions
+  db.prepare(
+    `UPDATE paper_positions SET quantity = 0, avg_price = 0, market_value = 0, unrealised_pnl = 0 WHERE account_id = ?`,
+  ).run(userId);
+
+  // Keep paper trades but mark them or close them - for now, just keep them
+  // Reset transactions
+  db.prepare(
+    `DELETE FROM paper_transactions WHERE account_id = ?`,
+  ).run(userId);
+}

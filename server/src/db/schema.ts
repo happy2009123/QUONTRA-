@@ -275,7 +275,77 @@ CREATE TABLE IF NOT EXISTS paper_trades (
 );
 CREATE INDEX IF NOT EXISTS idx_paper_status ON paper_trades(status, opened_at DESC);
 
--- ── Daily reports ─────────────────────────────────────────────────────
+-- ── Paper accounts ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS paper_accounts (
+  user_id            TEXT PRIMARY KEY,
+  initial_capital    REAL NOT NULL DEFAULT 1000000,
+  available_capital  REAL NOT NULL DEFAULT 1000000,
+  used_capital       REAL NOT NULL DEFAULT 0,
+  total_portfolio_value REAL NOT NULL DEFAULT 1000000,
+  realised_pnl       REAL NOT NULL DEFAULT 0,
+  unrealised_pnl     REAL NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_accounts_user ON paper_accounts(user_id);
+
+-- ── Paper wallets ──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS paper_wallets (
+  id                 TEXT PRIMARY KEY REFERENCES paper_accounts(id) ON DELETE CASCADE,
+  cash_balance       REAL NOT NULL DEFAULT 1000000,
+  used_capital       REAL NOT NULL DEFAULT 0,
+  updated_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_wallets_account ON paper_wallets(account_id);
+
+-- ── Paper orders ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS paper_orders (
+  id                 TEXT PRIMARY KEY,
+  account_id         TEXT NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+  instrument_id      TEXT NOT NULL REFERENCES instruments(id),
+  strategy_id        TEXT REFERENCES strategies(id),
+  direction          TEXT NOT NULL,
+  quantity           REAL NOT NULL,
+  price              REAL NOT NULL,
+  status             TEXT NOT NULL,          -- PENDING|FILLED|CANCELLED|REJECTED
+  order_type         TEXT NOT NULL,          -- MARKET|LIMIT
+  created_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_account ON paper_orders(account_id);
+CREATE INDEX IF NOT EXISTS idx_paper_orders_instrument ON paper_orders(instrument_id);
+
+-- ── Paper positions ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS paper_positions (
+  id                 TEXT PRIMARY KEY,
+  account_id         TEXT NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+  instrument_id      TEXT NOT NULL REFERENCES instruments(id),
+  quantity           REAL NOT NULL DEFAULT 0,
+  avg_price          REAL NOT NULL DEFAULT 0,
+  market_value       REAL NOT NULL DEFAULT 0,
+  unrealised_pnl     REAL NOT NULL DEFAULT 0,
+  updated_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_account ON paper_positions(account_id);
+CREATE INDEX IF NOT EXISTS idx_paper_positions_instrument ON paper_positions(instrument_id);
+
+-- ── Paper transactions ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS paper_transactions (
+  id                 TEXT PRIMARY KEY,
+  account_id         TEXT NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+  type               TEXT NOT NULL,          -- DEPOSIT|WITHDRAWAL|BUY|SELL|P&L_ADJUSTMENT
+  amount             REAL NOT NULL,
+  description        TEXT,
+  related_id         TEXT,                  -- order_id or trade_id
+  created_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_transactions_account ON paper_transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_paper_transactions_type ON paper_transactions(type);
+
+-- ── Enhanced paper trades ──────────────────────────────────────────────
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS realised_pnl REAL NOT NULL DEFAULT 0;
+ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS unrealised_pnl REAL NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status, opened_at DESC);
 CREATE TABLE IF NOT EXISTS daily_reports (
   id                 TEXT PRIMARY KEY,
   report_date        TEXT NOT NULL,
