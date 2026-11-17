@@ -724,9 +724,8 @@ export function buildRouter(deps: RouterDeps): Router {
       price: number;
     };
 
-    // Get account state
-    const account = getPaperAccount(db, userId);
-    if (!account) throw new AppError('NOT_FOUND', 'Paper account not found');
+    // Get account state (auto-create on first touch, same as GET /api/paper-account)
+    getPaperAccount(db, userId) ?? upsertPaperAccount(db, userId);
 
     // Validate balance
     const portfolio = getPortfolioSummary(db, userId);

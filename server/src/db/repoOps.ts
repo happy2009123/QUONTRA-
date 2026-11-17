@@ -393,8 +393,9 @@ export function getWalletBalance(db: Db, userId: string): PaperWallet {
     .prepare('SELECT cash_balance, used_capital FROM paper_wallets WHERE id = ?')
     .get(userId) as { cash_balance: number; used_capital: number } | undefined;
   if (!wallet) {
-    // Wallet doesn't exist yet - create it linked to the account
-    // This can happen if account was created but wallet wasn't
+    // Wallet doesn't exist yet - create it linked to the account.
+    // Ensure the account row exists first so the wallet FK is satisfied.
+    if (!getPaperAccount(db, userId)) upsertPaperAccount(db, userId);
     db.prepare(
       `INSERT INTO paper_wallets (id, cash_balance, used_capital, updated_at) VALUES (?, ?, ?, ?)`,
     ).run(userId, 1000000, 0, new Date().toISOString());
