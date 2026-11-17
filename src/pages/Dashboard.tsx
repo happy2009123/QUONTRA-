@@ -1,10 +1,11 @@
-﻿import { useMemo, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Badge,
   Button,
   Card,
   DataBadge,
+  DataTable,
   EmptyState,
   ErrorState,
   Input,
@@ -12,6 +13,7 @@ import {
   Select,
   SegmentedControl,
   Skeleton,
+  StatTile,
 } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import { Heatmap } from '@/components/charts/Heatmap';
@@ -29,7 +31,7 @@ import type {
   VolatilityGauge,
 } from '@/models';
 import { buildCandles } from '@/data/marketData';
-import { demoSource } from '@/data/universe';
+import { demoSource, INSTRUMENT_BY_ID } from '@/data/universe';
 import { formatDateTime, formatPercent, formatPrice } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -92,6 +94,7 @@ export default function Dashboard() {
           </div>
 
           <OpportunitiesSection />
+          <PaperPortfolioSection />
         </div>
 
         <OrderPlacementSection />
@@ -545,6 +548,7 @@ function OrderPlacementSection() {
           text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}. Available: ₹${Number(available ?? 0).toLocaleString()}`,
         });
         setTimeout(() => setFeedback(null), 5000);
+        window.dispatchEvent(new Event('paper-updated'));
       } else {
         setFeedback({ kind: 'error', text: payload.error?.message ?? 'Failed to place order' });
       }
@@ -645,6 +649,256 @@ function OrderPlacementSection() {
         <p className="rounded-md border border-line bg-pos/10 px-3 py-2 text-[13px] text-pos" role="status">
           {feedback.text}
         </p>
+      )}
+    </Card>
+  );
+}
+
+interface PaperPortfolio {
+  available_capital: number;
+  used_capital: number;
+  total_portfolio_value: number;
+  realised_pnl: number;
+  unrealised_pnl: number;
+}
+
+interface PaperPosition {
+  instrument_id: string;
+  quantity: number;
+  avg_price: number;
+  market_value: number;
+  unrealised_pnl: number;
+}
+
+interface PaperOrder {
+  id: string;
+  direction: string;
+  order_type: string;
+  quantity: number;
+  price: number;
+  status: string;
+  created_at: string;
+}
+
+const ORDER_STATUS_TONE: Record<string, Tone> = {
+  PENDING: 'warning',
+  FILLED: 'positive',
+  CANCELLED: 'muted',
+  REJECTED: 'negative',
+};
+
+const inr = (value: number) =>
+  `₹${value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const signedInr = (value: number) =>
+  `${value >= 0 ? '+' : '−'}₹${Math.abs(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+function PaperPortfolioSection() {
+  const [portfolio, setPortfolio] = useState<PaperPortfolio | null>(null);
+  const [positions, setPositions] = useState<PaperPosition[]>([]);
+  const [orders, setOrders] = useState<PaperOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [pfRes, posRes, ordRes] = await Promise.all([
+        fetch('/api/paper-portfolio'),
+        fetch('/api/paper-positions'),
+        fetch('/api/paper-orders'),
+      ]);
+      const pf = (await pfRes.json()) as { data?: PaperPortfolio; error?: { message?: string } };
+      const pos = (await posRes.json()) as { data?: PaperPosition[]; error?: { message?: string } };
+      const ord = (await ordRes.json()) as { data?: PaperOrder[]; error?: { message?: string } };
+      if (!pfRes.ok || !posRes.ok || !ordRes.ok) {
+        throw new Error(
+          pf.error?.message ?? pos.error?.message ?? ord.error?.message ?? 'Failed to load paper portfolio',
+        );
+      }
+      setPortfolio(pf.data ?? null);
+      setPositions(Array.isArray(pos.data) ? pos.data : []);
+      setOrders(Array.isArray(ord.data) ? ord.data : []);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load paper portfolio');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const onUpdate = () => void load();
+    window.addEventListener('paper-updated', onUpdate);
+    return () => window.removeEventListener('paper-updated', onUpdate);
+  }, [load]);
+
+  const cancelOrder = async (orderId: string) => {
+    setCancelling(orderId);
+    try {
+      const res = await fetch('/api/paper-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId }),
+      });
+      const payload = (await res.json()) as { data?: { capitalReturned?: number }; error?: { message?: string } };
+      if (!res.ok) throw new Error(payload.error?.message ?? 'Cancel failed');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Cancel failed');
+    } finally {
+      setCancelling(null);
+    }
+  };
+
+  const positionColumns = [
+    {
+      key: 'instrument',
+      header: 'Instrument',
+      cell: (row: PaperPosition) => INSTRUMENT_BY_ID[row.instrument_id]?.symbol ?? row.instrument_id,
+    },
+    { key: 'qty', header: 'Qty', align: 'right' as const, cell: (row: PaperPosition) => row.quantity },
+    {
+      key: 'avg',
+      header: 'Avg price',
+      align: 'right' as const,
+      cell: (row: PaperPosition) => formatPrice(row.avg_price),
+    },
+    {
+      key: 'value',
+      header: 'Market value',
+      align: 'right' as const,
+      cell: (row: PaperPosition) => inr(row.market_value),
+    },
+    {
+      key: 'pnl',
+      header: 'Unrealised P&L',
+      align: 'right' as const,
+      cell: (row: PaperPosition) => (
+        <span className={row.unrealised_pnl >= 0 ? 'text-pos' : 'text-neg'}>{signedInr(row.unrealised_pnl)}</span>
+      ),
+    },
+  ];
+
+  const orderColumns = [
+    {
+      key: 'time',
+      header: 'Time',
+      cell: (row: PaperOrder) => <span className="num text-mut">{formatDateTime(row.created_at)}</span>,
+    },
+    {
+      key: 'side',
+      header: 'Side',
+      cell: (row: PaperOrder) => (
+        <Badge tone={row.direction === 'BUY' ? 'positive' : 'negative'}>{row.direction}</Badge>
+      ),
+    },
+    {
+      key: 'type',
+      header: 'Type',
+      cell: (row: PaperOrder) => <span className="text-mut">{row.order_type}</span>,
+    },
+    { key: 'qty', header: 'Qty', align: 'right' as const, cell: (row: PaperOrder) => row.quantity },
+    {
+      key: 'price',
+      header: 'Price',
+      align: 'right' as const,
+      cell: (row: PaperOrder) => (row.price ? formatPrice(row.price) : '—'),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (row: PaperOrder) => (
+        <Badge tone={ORDER_STATUS_TONE[row.status] ?? 'neutral'}>{row.status}</Badge>
+      ),
+    },
+    {
+      key: 'action',
+      header: '',
+      align: 'right' as const,
+      cell: (row: PaperOrder) =>
+        row.status === 'PENDING' ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={cancelling === row.id}
+            onClick={() => void cancelOrder(row.id)}
+          >
+            Cancel
+          </Button>
+        ) : null,
+    },
+  ];
+
+  return (
+    <Card
+      title="Paper Portfolio"
+      subtitle="Simulated positions and orders — refreshed on every trade"
+      actions={
+        <Button variant="ghost" size="sm" onClick={() => void load()} loading={loading}>
+          Refresh
+        </Button>
+      }
+    >
+      {error && <ErrorState message={error} onRetry={() => void load()} />}
+      {loading && !portfolio && (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5" aria-hidden>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-20" />
+          ))}
+        </div>
+      )}
+      {!loading && !portfolio && !error && (
+        <EmptyState
+          title="No portfolio data"
+          description="The paper portfolio endpoint returned no data."
+        />
+      )}
+      {portfolio && (
+        <>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <StatTile label="Equity" value={inr(portfolio.total_portfolio_value)} />
+            <StatTile label="Cash" value={inr(portfolio.available_capital)} />
+            <StatTile label="In positions" value={inr(portfolio.used_capital)} />
+            <StatTile
+              label="Realised P&L"
+              value={<span className={portfolio.realised_pnl >= 0 ? 'text-pos' : 'text-neg'}>{signedInr(portfolio.realised_pnl)}</span>}
+            />
+            <StatTile
+              label="Unrealised P&L"
+              value={<span className={portfolio.unrealised_pnl >= 0 ? 'text-pos' : 'text-neg'}>{signedInr(portfolio.unrealised_pnl)}</span>}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="section-title">Open positions</h3>
+            <DataTable
+              columns={positionColumns}
+              rows={positions}
+              rowKey={(row) => row.instrument_id}
+              caption="Open paper trading positions"
+              loading={loading}
+              dense
+              emptyTitle="No open positions"
+              emptyDescription="Place a paper order to open a simulated position."
+            />
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="section-title">Recent orders</h3>
+            <DataTable
+              columns={orderColumns}
+              rows={orders}
+              rowKey={(row) => row.id}
+              caption="Recent paper trading orders"
+              loading={loading}
+              dense
+              emptyTitle="No orders yet"
+              emptyDescription="Orders you place appear here with fill status and cancellation."
+            />
+          </div>
+        </>
       )}
     </Card>
   );
