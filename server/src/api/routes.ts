@@ -752,13 +752,17 @@ export function buildRouter(deps: RouterDeps): Router {
     // Insert order
     db.prepare(
       `INSERT INTO paper_orders (id, account_id, instrument_id, direction, quantity, price, status, order_type, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, PENDING, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
     ).run(orderId, userId, instrumentId, direction, quantity, price || 0, orderType, now);
 
-    // Deduct from available capital
+    // Deduct from available capital (wallet is what the portfolio reads)
+    getWalletBalance(db, userId);
     db.prepare(
-      `UPDATE paper_accounts SET available_capital = available_capital - ? WHERE user_id = ?`,
-    ).run(totalCost, userId);
+      `UPDATE paper_accounts SET available_capital = available_capital - ?, used_capital = used_capital + ?, updated_at = ? WHERE user_id = ?`,
+    ).run(totalCost, totalCost, now, userId);
+    db.prepare(
+      `UPDATE paper_wallets SET cash_balance = cash_balance - ?, used_capital = used_capital + ?, updated_at = ? WHERE id = ?`,
+    ).run(totalCost, totalCost, now, userId);
 
     // Create transaction record
     db.prepare(
@@ -787,8 +791,10 @@ export function buildRouter(deps: RouterDeps): Router {
   router.post('/api/paper-cancel', async (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    const { orderId } = ctx.body as { orderId: string };
+    const body = ctx.body as { orderId?: unknown } | undefined;
+    const orderId = typeof body?.orderId === 'string' ? body.orderId : '';
     v.throwIfInvalid();
+    if (!orderId) throw new AppError('VALIDATION_ERROR', 'orderId is required');
 
     // Find the order
     const order = db
@@ -797,26 +803,31 @@ export function buildRouter(deps: RouterDeps): Router {
     if (!order) throw new AppError('NOT_FOUND', 'Order not found');
     if (order.status !== 'PENDING') throw new AppError('INVALID_STATUS', 'Only pending orders can be cancelled');
 
-    // Free up the capital
-    const totalCost = (order.price || 0) * order.quantity;
+    // Free up the capital — refund exactly what was deducted at placement
+    const notional = (order.price || 0) * order.quantity;
+    const refund = notional + notional * 0.0005;
+    const now = new Date().toISOString();
 
     // Update order status
     db.prepare(
-      `UPDATE paper_orders SET status = CANCELLED WHERE id = ?`,
+      `UPDATE paper_orders SET status = 'CANCELLED' WHERE id = ?`,
     ).run(orderId);
 
-    // Return capital
+    // Return capital (wallet is what the portfolio reads)
     db.prepare(
-      `UPDATE paper_accounts SET available_capital = available_capital + ? WHERE user_id = ?`,
-    ).run(totalCost, userId);
+      `UPDATE paper_accounts SET available_capital = available_capital + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE user_id = ?`,
+    ).run(refund, refund, now, userId);
+    db.prepare(
+      `UPDATE paper_wallets SET cash_balance = cash_balance + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE id = ?`,
+    ).run(refund, refund, now, userId);
 
     // Create cancellation transaction
     db.prepare(
       `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(`tx-cancel-${Date.now()}`, userId, 'CANCELLATION', totalCost, 'Order cancelled', orderId, new Date().toISOString());
+    ).run(`tx-cancel-${Date.now()}`, userId, 'CANCELLATION', refund, 'Order cancelled', orderId, now);
 
-    return ok({ orderId, status: 'CANCELLED', capitalReturned: totalCost });
+    return ok({ orderId, status: 'CANCELLED', capitalReturned: refund });
   });
 
   router.get('/api/strategies/scan', async (ctx) => {
