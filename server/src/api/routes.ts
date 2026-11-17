@@ -644,24 +644,27 @@ export function buildRouter(deps: RouterDeps): Router {
     return ok(account);
   });
 
-  router.get('/api/paper-portfolio', (ctx) => {
+  router.get('/api/paper-portfolio', async (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
+    await sweepPendingLimits(userId);
     return ok(getPortfolioSummary(db, userId));
   });
 
-  router.get('/api/paper-positions', (ctx) => {
+  router.get('/api/paper-positions', async (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
+    await sweepPendingLimits(userId);
     return ok(getOpenPositions(db, userId));
   });
 
-  router.get('/api/paper-orders', (ctx) => {
+  router.get('/api/paper-orders', async (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
+    await sweepPendingLimits(userId);
     return ok(getOrderHistory(db, userId));
   });
 
@@ -710,77 +713,290 @@ export function buildRouter(deps: RouterDeps): Router {
     return ok({ account, wallet, positions, orders, transactions });
   });
 
+  // ── Order execution engine ───────────────────────────────────────────────
+  const FEE_RATE = 0.0005; // 0.05% brokerage
+
+  interface PaperPositionRow {
+    id: string;
+    account_id: string;
+    instrument_id: string;
+    quantity: number;
+    avg_price: number;
+    market_value: number;
+    unrealised_pnl: number;
+  }
+
+  interface PaperOrderRow {
+    id: string;
+    account_id: string;
+    instrument_id: string;
+    direction: string;
+    quantity: number;
+    price: number;
+    status: string;
+    order_type: string;
+    created_at: string;
+  }
+
+  function getPosition(userId: string, instrumentId: string): PaperPositionRow | undefined {
+    return db
+      .prepare('SELECT * FROM paper_positions WHERE account_id = ? AND instrument_id = ?')
+      .get(userId, instrumentId) as PaperPositionRow | undefined;
+  }
+
+  async function resolveMarketPrice(instrumentId: string): Promise<number> {
+    const quotes = await getQuotesApi(db, registry, config, [instrumentId]);
+    const px = quotes[0]?.quote?.lastPrice ?? 0;
+    if (!Number.isFinite(px) || px <= 0) {
+      throw new AppError('PROVIDER_UNAVAILABLE', 'No market price available — cannot fill market order');
+    }
+    return px;
+  }
+
+  /** BUY fill: cash was reserved at placement — convert the reservation into a position. */
+  function fillBuyOrder(args: {
+    orderId: string;
+    userId: string;
+    instrumentId: string;
+    quantity: number;
+    execPrice: number;
+    totalCost: number;
+    now: string;
+  }): void {
+    const { orderId, userId, instrumentId, quantity, execPrice, totalCost, now } = args;
+    db.prepare(`UPDATE paper_orders SET status = 'FILLED', price = ? WHERE id = ?`).run(execPrice, orderId);
+
+    const pos = getPosition(userId, instrumentId);
+    const qty0 = pos && pos.quantity > 0 ? pos.quantity : 0;
+    const avg0 = qty0 > 0 ? pos!.avg_price : 0;
+    const newQty = qty0 + quantity;
+    const newAvg = qty0 > 0 ? (avg0 * qty0 + totalCost) / newQty : totalCost / quantity;
+    const marketValue = execPrice * newQty;
+    const unrealised = (execPrice - newAvg) * newQty;
+
+    if (pos) {
+      db.prepare(
+        `UPDATE paper_positions SET quantity = ?, avg_price = ?, market_value = ?, unrealised_pnl = ?, updated_at = ?
+         WHERE account_id = ? AND instrument_id = ?`,
+      ).run(newQty, newAvg, marketValue, unrealised, now, userId, instrumentId);
+    } else {
+      db.prepare(
+        `INSERT INTO paper_positions (id, account_id, instrument_id, quantity, avg_price, market_value, unrealised_pnl, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(`pos-${userId}-${instrumentId}`, userId, instrumentId, newQty, newAvg, marketValue, unrealised, now);
+    }
+
+    db.prepare(
+      `INSERT INTO paper_trades (id, instrument_id, direction, quantity, entry_price, status, opened_at, created_at)
+       VALUES (?, ?, 'BUY', ?, ?, 'OPEN', ?, ?)`,
+    ).run(`trade-${orderId}`, instrumentId, quantity, execPrice, now, now);
+  }
+
+  /** SELL fill: credit proceeds, release cost basis, realise P&L, shrink the position. */
+  function fillSellOrder(args: {
+    orderId: string;
+    userId: string;
+    instrumentId: string;
+    quantity: number;
+    execPrice: number;
+    now: string;
+  }): void {
+    const { orderId, userId, instrumentId, quantity, execPrice, now } = args;
+    const pos = getPosition(userId, instrumentId);
+    if (!pos || pos.quantity < quantity) {
+      throw new AppError('INSUFFICIENT_POSITION', 'Position reduced — not enough quantity to sell');
+    }
+
+    const notional = execPrice * quantity;
+    const proceeds = notional - notional * FEE_RATE;
+    const releasedCost = pos.avg_price * quantity;
+    const realised = proceeds - releasedCost;
+    const newQty = pos.quantity - quantity;
+
+    getWalletBalance(db, userId);
+    db.prepare(
+      `UPDATE paper_wallets SET cash_balance = cash_balance + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE id = ?`,
+    ).run(proceeds, releasedCost, now, userId);
+    db.prepare(
+      `UPDATE paper_accounts SET available_capital = available_capital + ?, used_capital = MAX(0, used_capital - ?),
+         realised_pnl = realised_pnl + ?, updated_at = ? WHERE user_id = ?`,
+    ).run(proceeds, releasedCost, realised, now, userId);
+
+    if (newQty <= 0) {
+      db.prepare(
+        `UPDATE paper_positions SET quantity = 0, avg_price = 0, market_value = 0, unrealised_pnl = 0, updated_at = ?
+         WHERE account_id = ? AND instrument_id = ?`,
+      ).run(now, userId, instrumentId);
+    } else {
+      db.prepare(
+        `UPDATE paper_positions SET quantity = ?, market_value = ?, unrealised_pnl = ?, updated_at = ?
+         WHERE account_id = ? AND instrument_id = ?`,
+      ).run(newQty, execPrice * newQty, (execPrice - pos.avg_price) * newQty, now, userId, instrumentId);
+    }
+
+    db.prepare(`UPDATE paper_orders SET status = 'FILLED', price = ? WHERE id = ?`).run(execPrice, orderId);
+
+    db.prepare(
+      `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+       VALUES (?, ?, 'SELL', ?, 'Sale proceeds', ?, ?)`,
+    ).run(`tx-sell-${orderId}`, userId, proceeds, orderId, now);
+
+    const openTrade = db
+      .prepare(
+        `SELECT id, quantity, entry_price FROM paper_trades WHERE instrument_id = ? AND status = 'OPEN'
+         ORDER BY opened_at DESC LIMIT 1`,
+      )
+      .get(instrumentId) as { id: string; quantity: number; entry_price: number } | undefined;
+    if (openTrade) {
+      if (openTrade.quantity <= quantity) {
+        db.prepare(
+          `UPDATE paper_trades SET status = 'CLOSED', exit_price = ?, closed_at = ?, realised_pnl = ? WHERE id = ?`,
+        ).run(execPrice, now, (execPrice - openTrade.entry_price) * openTrade.quantity, openTrade.id);
+      } else {
+        db.prepare(`UPDATE paper_trades SET quantity = quantity - ? WHERE id = ?`).run(quantity, openTrade.id);
+      }
+    }
+  }
+
+  /** Fills resting LIMIT orders whose limit price has been crossed by the latest quote. */
+  async function sweepPendingLimits(userId: string): Promise<void> {
+    const pending = db
+      .prepare(
+        `SELECT * FROM paper_orders WHERE account_id = ? AND status = 'PENDING' AND order_type = 'LIMIT'`,
+      )
+      .all(userId) as unknown as PaperOrderRow[];
+    if (pending.length === 0) return;
+
+    const instIds = [...new Set(pending.map((p) => p.instrument_id))];
+    let quotes: Awaited<ReturnType<typeof getQuotesApi>>;
+    try {
+      quotes = await getQuotesApi(db, registry, config, instIds);
+    } catch {
+      return; // providers unavailable — leave orders resting
+    }
+    const pxById = new Map(quotes.map((q) => [q.id, q.quote.lastPrice]));
+
+    for (const order of pending) {
+      const px = pxById.get(order.instrument_id);
+      if (!px || px <= 0) continue;
+      const crossed = order.direction === 'BUY' ? px <= order.price : px >= order.price;
+      if (!crossed) continue;
+      const now = new Date().toISOString();
+      try {
+        if (order.direction === 'BUY') {
+          const notional = order.price * order.quantity;
+          fillBuyOrder({
+            orderId: order.id,
+            userId,
+            instrumentId: order.instrument_id,
+            quantity: order.quantity,
+            execPrice: order.price,
+            totalCost: notional + notional * FEE_RATE,
+            now,
+          });
+        } else {
+          fillSellOrder({
+            orderId: order.id,
+            userId,
+            instrumentId: order.instrument_id,
+            quantity: order.quantity,
+            execPrice: order.price,
+            now,
+          });
+        }
+      } catch {
+        // position/capital changed under the order — leave it for manual cancel
+      }
+    }
+  }
+
   // ── Order Placement ──────────────────────────────────────────────────────
   router.post('/api/paper-order', async (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
 
-    const { instrumentId, direction, orderType, quantity, price } = ctx.body as {
-      instrumentId: string;
-      direction: 'BUY' | 'SELL';
-      orderType: 'MARKET' | 'LIMIT';
-      quantity: number;
-      price: number;
-    };
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const instrumentId = typeof body.instrumentId === 'string' ? body.instrumentId : '';
+    const direction = body.direction === 'BUY' || body.direction === 'SELL' ? body.direction : null;
+    const orderType = body.orderType === 'MARKET' || body.orderType === 'LIMIT' ? body.orderType : null;
+    const quantity = typeof body.quantity === 'number' && Number.isInteger(body.quantity) && body.quantity > 0 ? body.quantity : 0;
+    const limitPrice = typeof body.price === 'number' && Number.isFinite(body.price) ? body.price : 0;
+
+    if (!instrumentId || !direction || !orderType || quantity <= 0) {
+      throw new AppError('VALIDATION_ERROR', 'instrumentId, direction (BUY|SELL), orderType (MARKET|LIMIT) and a positive integer quantity are required');
+    }
+    if (orderType === 'LIMIT' && limitPrice <= 0) {
+      throw new AppError('VALIDATION_ERROR', 'A positive limit price is required for LIMIT orders');
+    }
+    if (!getInstrument(db, instrumentId)) {
+      throw new AppError('NOT_FOUND', `Unknown instrument "${instrumentId}"`);
+    }
+
+    // Opportunistically fill any resting LIMIT orders first
+    await sweepPendingLimits(userId);
 
     // Get account state (auto-create on first touch, same as GET /api/paper-account)
     getPaperAccount(db, userId) ?? upsertPaperAccount(db, userId);
 
-    // Validate balance
-    const portfolio = getPortfolioSummary(db, userId);
-    const capitalNeeded = (price || 0) * quantity;
+    // Execution price: quote-backed for MARKET (never fabricated), limit price for LIMIT
+    const execPrice = orderType === 'MARKET' ? await resolveMarketPrice(instrumentId) : limitPrice;
+    const notional = execPrice * quantity;
+    const brokerage = notional * FEE_RATE;
+    const totalCost = notional + brokerage;
 
-    if (direction === 'BUY' && portfolio.available_capital < capitalNeeded) {
-      throw new AppError('INSUFFICIENT_BALANCE', 'Not enough available capital');
-    }
-    if (direction === 'SELL') {
-      const positions = getOpenPositions(db, userId);
-      if (!positions.some((p) => p.instrument_id === instrumentId)) {
-        throw new AppError('INSUFFICIENT_POSITION', 'Not enough position to sell');
+    if (direction === 'BUY') {
+      const portfolio = getPortfolioSummary(db, userId);
+      if (portfolio.available_capital < totalCost) {
+        throw new AppError('INSUFFICIENT_BALANCE', `Not enough available capital (need ₹${totalCost.toFixed(2)}, have ₹${portfolio.available_capital.toFixed(2)})`);
+      }
+    } else {
+      const pos = getPosition(userId, instrumentId);
+      if (!pos || pos.quantity < quantity) {
+        throw new AppError('INSUFFICIENT_POSITION', 'No open position (or insufficient quantity) to sell');
       }
     }
 
-    // Calculate charges
-    const brokerage = (price || 0) * quantity * 0.0005; // 0.05%
-    const totalCost = (price || 0) * quantity + brokerage;
-
-    // Create order
     const orderId = `ord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
 
-    // Insert order
     db.prepare(
       `INSERT INTO paper_orders (id, account_id, instrument_id, direction, quantity, price, status, order_type, created_at)
        VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
-    ).run(orderId, userId, instrumentId, direction, quantity, price || 0, orderType, now);
+    ).run(orderId, userId, instrumentId, direction, quantity, execPrice, orderType, now);
 
-    // Deduct from available capital (wallet is what the portfolio reads)
-    getWalletBalance(db, userId);
-    db.prepare(
-      `UPDATE paper_accounts SET available_capital = available_capital - ?, used_capital = used_capital + ?, updated_at = ? WHERE user_id = ?`,
-    ).run(totalCost, totalCost, now, userId);
-    db.prepare(
-      `UPDATE paper_wallets SET cash_balance = cash_balance - ?, used_capital = used_capital + ?, updated_at = ? WHERE id = ?`,
-    ).run(totalCost, totalCost, now, userId);
+    if (direction === 'BUY') {
+      // Reserve capital (cash out now; converts to position cost on fill, refunded on cancel)
+      getWalletBalance(db, userId);
+      db.prepare(
+        `UPDATE paper_accounts SET available_capital = available_capital - ?, used_capital = used_capital + ?, updated_at = ? WHERE user_id = ?`,
+      ).run(totalCost, totalCost, now, userId);
+      db.prepare(
+        `UPDATE paper_wallets SET cash_balance = cash_balance - ?, used_capital = used_capital + ?, updated_at = ? WHERE id = ?`,
+      ).run(totalCost, totalCost, now, userId);
+      db.prepare(
+        `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+         VALUES (?, ?, 'BUY', ?, 'Purchase (reserved)', ?, ?)`,
+      ).run(`tx-${orderId}`, userId, totalCost, orderId, now);
+    }
 
-    // Create transaction record
-    db.prepare(
-      `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(`tx-${Date.now()}`, userId, direction === 'BUY' ? 'BUY' : 'SELL', totalCost, 
-      direction === 'BUY' ? 'Market purchase' : 'Market sale', orderId, now);
-
-    // Recalculate portfolio summary
-    getPortfolioSummary(db, userId); // recalculate
+    let status: 'PENDING' | 'FILLED' = 'PENDING';
+    if (orderType === 'MARKET') {
+      if (direction === 'BUY') {
+        fillBuyOrder({ orderId, userId, instrumentId, quantity, execPrice, totalCost, now });
+      } else {
+        fillSellOrder({ orderId, userId, instrumentId, quantity, execPrice, now });
+      }
+      status = 'FILLED';
+    }
 
     return ok({
       orderId,
-      status: 'PENDING',
+      status,
       direction,
       instrumentId,
       quantity,
-      price: price || 0,
+      price: execPrice,
       orderType,
       totalCost,
       brokerage,
@@ -796,6 +1012,9 @@ export function buildRouter(deps: RouterDeps): Router {
     v.throwIfInvalid();
     if (!orderId) throw new AppError('VALIDATION_ERROR', 'orderId is required');
 
+    // A resting LIMIT order may have been crossed while the user was deciding
+    await sweepPendingLimits(userId);
+
     // Find the order
     const order = db
       .prepare('SELECT * FROM paper_orders WHERE id = ? AND account_id = ?')
@@ -803,9 +1022,6 @@ export function buildRouter(deps: RouterDeps): Router {
     if (!order) throw new AppError('NOT_FOUND', 'Order not found');
     if (order.status !== 'PENDING') throw new AppError('INVALID_STATUS', 'Only pending orders can be cancelled');
 
-    // Free up the capital — refund exactly what was deducted at placement
-    const notional = (order.price || 0) * order.quantity;
-    const refund = notional + notional * 0.0005;
     const now = new Date().toISOString();
 
     // Update order status
@@ -813,21 +1029,26 @@ export function buildRouter(deps: RouterDeps): Router {
       `UPDATE paper_orders SET status = 'CANCELLED' WHERE id = ?`,
     ).run(orderId);
 
-    // Return capital (wallet is what the portfolio reads)
-    db.prepare(
-      `UPDATE paper_accounts SET available_capital = available_capital + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE user_id = ?`,
-    ).run(refund, refund, now, userId);
-    db.prepare(
-      `UPDATE paper_wallets SET cash_balance = cash_balance + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE id = ?`,
-    ).run(refund, refund, now, userId);
+    // BUY orders hold a capital reservation — release it. SELL orders never reserved cash.
+    let capitalReturned = 0;
+    if (order.direction === 'BUY') {
+      const notional = (order.price || 0) * order.quantity;
+      const refund = notional + notional * FEE_RATE;
+      capitalReturned = refund;
+      getWalletBalance(db, userId);
+      db.prepare(
+        `UPDATE paper_accounts SET available_capital = available_capital + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE user_id = ?`,
+      ).run(refund, refund, now, userId);
+      db.prepare(
+        `UPDATE paper_wallets SET cash_balance = cash_balance + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE id = ?`,
+      ).run(refund, refund, now, userId);
+      db.prepare(
+        `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+         VALUES (?, ?, 'CANCELLATION', ?, 'Order cancelled', ?, ?)`,
+      ).run(`tx-cancel-${orderId}`, userId, refund, orderId, now);
+    }
 
-    // Create cancellation transaction
-    db.prepare(
-      `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(`tx-cancel-${Date.now()}`, userId, 'CANCELLATION', refund, 'Order cancelled', orderId, now);
-
-    return ok({ orderId, status: 'CANCELLED', capitalReturned: refund });
+    return ok({ orderId, status: 'CANCELLED', capitalReturned });
   });
 
   router.get('/api/strategies/scan', async (ctx) => {

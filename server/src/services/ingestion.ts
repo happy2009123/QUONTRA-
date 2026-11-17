@@ -10,7 +10,7 @@ import type { Db } from '../db/db.ts';
 import { insertCandles, updateCandleQuality, upsertQuote, type CandleWrite, type QualityStatus } from '../db/repoSeries.ts';
 import type { ProviderRegistry } from '../providers/registry.ts';
 import type { Interval, ProviderQuote, SourceRef } from '../providers/types.ts';
-import { alignTimestamp, timeframeMs, toUnixSeconds } from '../lib/time.ts';
+import { alignTimestamp, timeframeMs, toUnixSeconds, withinSession } from '../lib/time.ts';
 import { validateCandles, validateQuote, type QualityIssue } from './dataQuality.ts';
 
 export interface IngestCandleOptions {
@@ -145,12 +145,36 @@ export async function ingestQuotes(
   instruments: RoutableInstrument[],
 ): Promise<QuoteIngestResult> {
   const { quotes, sources, errors } = await registry.fetchQuotes(instruments);
+
+  // Market-aware staleness: while a session is open, quotes must be fresh.
+  // When it is closed, the last close is the legitimate reference price —
+  // accept it (up to 7 days) and let freshness/marketStatus labels tell the
+  // truth, consistent with the "never invent, serve with labels" policy.
+  const nowMs = Date.now();
+  const marketRows = db
+    .prepare('SELECT category, timezone, weekday_open_min, weekday_close_min, weekdays FROM markets')
+    .all() as Array<{ category: string; timezone: string; weekday_open_min: number; weekday_close_min: number; weekdays: string }>;
+  const marketByCategory = new Map(marketRows.map((m) => [m.category, m]));
+  const marketByInstrument = new Map(instruments.map((i) => [i.id, i.market]));
+  const quoteMaxAgeMs = (instrumentId: string, freshness: string): number => {
+    const base = freshness === 'LIVE' ? 60_000 : 900_000;
+    const category = marketByInstrument.get(instrumentId);
+    const market = category ? marketByCategory.get(category) : undefined;
+    if (!market) return base;
+    const open = withinSession(nowMs, market.timezone, {
+      openMinutes: market.weekday_open_min,
+      closeMinutes: market.weekday_close_min,
+      weekdays: JSON.parse(market.weekdays) as number[],
+    });
+    return open ? base : 7 * 86_400_000;
+  };
+
   let stored = 0;
   let rejected = 0;
   for (const quote of quotes) {
     const validation = validateQuote(
       { instrumentId: quote.instrumentId, lastPrice: quote.lastPrice, volume: quote.volume, updatedAt: quote.updatedAt },
-      { maxAgeMs: quote.freshness === 'LIVE' ? 60_000 : 900_000 },
+      { maxAgeMs: quoteMaxAgeMs(quote.instrumentId, quote.freshness) },
     );
     if (validation.status === 'REJECTED') {
       rejected += 1;

@@ -501,17 +501,17 @@ function OrderPlacementSection() {
   const [price, setPrice] = useState(0);
   const [instrumentId, setInstrumentId] = useState('eq-reliance');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   const instruments = [
     { value: 'eq-reliance', label: 'RELIANCE EQ' },
     { value: 'eq-tcs', label: 'TCS EQ' },
-    { value: 'in currency', label: 'USD/INR' },
+    { value: 'fx-usdinr', label: 'USD/INR' },
   ] as const;
 
   const handlePlaceOrder = async () => {
     setLoading(true);
-    setError(null);
+    setFeedback(null);
 
     try {
       const response = await fetch('/api/paper-order', {
@@ -529,25 +529,27 @@ function OrderPlacementSection() {
         }),
       });
 
-      const data = await response.json();
+      const payload = await response.json();
 
-      if (response.ok) {
+      if (response.ok && payload.data) {
+        const order = payload.data;
         setQuantity(1);
         if (orderType === 'LIMIT') setPrice(0);
-        setError(null);
         // Refresh portfolio summary
-        const portfolioResp = await fetch('/api/paper-portfolio', {
-          headers: { 'Content-Type': 'application/json' },
+        const portfolioResp = await fetch('/api/paper-portfolio');
+        const portfolioPayload = await portfolioResp.json();
+        const available = portfolioPayload.data?.available_capital;
+        const priceLabel = order.price ? ` @ ₹${Number(order.price).toLocaleString()}` : '';
+        setFeedback({
+          kind: 'success',
+          text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}. Available: ₹${Number(available ?? 0).toLocaleString()}`,
         });
-        const portfolioData = await portfolioResp.json();
-        // Show success
-        setError(`Order placed: ${data.orderId}. ${data.direction} ${data.quantity} @ ₹${data.price?.toLocaleString() || '0'}. Available: ₹${portfolioData.available_capital?.toLocaleString() || '0'}`);
-        setTimeout(() => setError(null), 5000);
+        setTimeout(() => setFeedback(null), 5000);
       } else {
-        setError(data.error || 'Failed to place order');
+        setFeedback({ kind: 'error', text: payload.error?.message ?? 'Failed to place order' });
       }
-    } catch (e) {
-      setError('Network error placing order');
+    } catch {
+      setFeedback({ kind: 'error', text: 'Network error placing order' });
     } finally {
       setLoading(false);
     }
@@ -638,8 +640,11 @@ function OrderPlacementSection() {
           </div>
         )}
       </div>
-      {error && (
-        <ErrorState message={error} onRetry={() => {}} />
+      {feedback?.kind === 'error' && <ErrorState message={feedback.text} />}
+      {feedback?.kind === 'success' && (
+        <p className="rounded-md border border-line bg-pos/10 px-3 py-2 text-[13px] text-pos" role="status">
+          {feedback.text}
+        </p>
       )}
     </Card>
   );

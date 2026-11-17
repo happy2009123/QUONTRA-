@@ -435,7 +435,7 @@ export function getOpenPositions(db: Db, userId: string): PaperPosition[] {
   const rows = db
     .prepare(
       `SELECT instrument_id, quantity, avg_price, market_value, unrealised_pnl
-       FROM paper_positions WHERE account_id = ?`,
+       FROM paper_positions WHERE account_id = ? AND quantity > 0`,
     ).all(userId) as unknown as PaperPosition[];
   return rows;
 }
