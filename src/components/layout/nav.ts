@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Bell,
   Beaker,
+  CandlestickChart,
   Database,
   FlaskConical,
   LayoutDashboard,
@@ -37,6 +38,12 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/scanner', label: 'Market Scanner', icon: Radar, shortLabel: 'Scanner' },
       { to: '/charts', label: 'Charting Terminal', icon: LineChart, shortLabel: 'Charts' },
     ],
+  },
+  {
+    to: '/paper-trading',
+    label: 'Paper Trading',
+    icon: CandlestickChart,
+    shortLabel: 'Trading',
   },
   {
     id: 'research',

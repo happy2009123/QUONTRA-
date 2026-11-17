@@ -37,7 +37,7 @@ const router = createBrowserRouter([
       { path: 'autonomous-analysis', element: <AutonomousAnalysis /> },
       { path: 'strategy-comparison', element: <StrategyComparisonPage /> },
       { path: 'personalized-scanner', element: <PersonalizedScannerPage /> },
-      { path: 'analysis-history', element: <AnalysisHistory /> },
+      { path: 'paper-trading', element: <PaperTrading /> },
       { path: 'backtesting', element: <Backtesting /> },
       { path: 'risk', element: <RiskCenter /> },
       { path: 'data', element: <DataCenter /> },
