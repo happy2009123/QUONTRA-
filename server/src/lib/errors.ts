@@ -10,7 +10,10 @@ export type ErrorCode =
   | 'PROVIDER_UNAVAILABLE'
   | 'TIMEOUT'
   | 'INTERNAL_ERROR'
-  | 'NOT_IMPLEMENTED';
+  | 'NOT_IMPLEMENTED'
+  | 'INSUFFICIENT_BALANCE'
+  | 'INSUFFICIENT_POSITION'
+  | 'INVALID_STATUS';
 
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
   VALIDATION_ERROR: 400,
@@ -23,6 +26,9 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   TIMEOUT: 504,
   INTERNAL_ERROR: 500,
   NOT_IMPLEMENTED: 501,
+  INSUFFICIENT_BALANCE: 400,
+  INSUFFICIENT_POSITION: 400,
+  INVALID_STATUS: 409,
 };
 
 export class AppError extends Error {

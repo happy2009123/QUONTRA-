@@ -41,6 +41,16 @@ export function openDatabase(options: OpenOptions): Db {
 export function migrateSchema(db: Db): void {
   withTx(db, () => {
     db.exec(SCHEMA_SQL);
+    // SQLite has no ADD COLUMN IF NOT EXISTS — guard the paper_trades upgrade
+    // so legacy databases gain the P&L columns without breaking re-runs.
+    const tradeCols = new Set(
+      (db.prepare('PRAGMA table_info(paper_trades)').all() as Array<{ name: string }>).map((r) => r.name),
+    );
+    for (const col of ['realised_pnl', 'unrealised_pnl'] as const) {
+      if (!tradeCols.has(col)) {
+        db.exec(`ALTER TABLE paper_trades ADD COLUMN ${col} REAL NOT NULL DEFAULT 0`);
+      }
+    }
     const row = db
       .prepare('SELECT version FROM schema_migrations WHERE version = ?')
       .get(SCHEMA_VERSION) as { version: number } | undefined;

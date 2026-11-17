@@ -65,6 +65,7 @@ import {
   getWalletBalance,
   resetPaperAccount,
   upsertPaperAccount,
+  type PaperOrder,
   type PaperTransaction,
 } from '../db/repoOps.ts';
 import { scan } from '../services/scanner.ts';
@@ -736,7 +737,7 @@ export function buildRouter(deps: RouterDeps): Router {
     }
     if (direction === 'SELL') {
       const positions = getOpenPositions(db, userId);
-      if (!positions.some(p => p.instrumentId === instrumentId)) {
+      if (!positions.some((p) => p.instrument_id === instrumentId)) {
         throw new AppError('INSUFFICIENT_POSITION', 'Not enough position to sell');
       }
     }
@@ -818,8 +819,6 @@ export function buildRouter(deps: RouterDeps): Router {
 
     return ok({ orderId, status: 'CANCELLED', capitalReturned: totalCost });
   });
-
-  router.get('/api/strategies/scan', async (ctx) => {
 
   router.get('/api/strategies/scan', async (ctx) => {
     const v = queryValidator(ctx.query);
