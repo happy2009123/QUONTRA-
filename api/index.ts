@@ -111,7 +111,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       params: matched.params,
       requestId,
       body,
-      ip: (req.socket.remoteAddress ?? 'unknown').split('::ffff:').join(''),
+      ip: (req.socket?.remoteAddress ?? req.headers['x-forwarded-for'] ?? 'unknown')
+        .toString()
+        .split(',')[0]
+        .split('::ffff:')
+        .join('')
+        .trim() || 'unknown',
     };
 
     const result: HandlerResult = await matched.handler(ctx);

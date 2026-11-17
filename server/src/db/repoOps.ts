@@ -396,8 +396,8 @@ export function getWalletBalance(db: Db, userId: string): PaperWallet {
     // Wallet doesn't exist yet - create it linked to the account
     // This can happen if account was created but wallet wasn't
     db.prepare(
-      `INSERT INTO paper_wallets (id, cash_balance, used_capital) VALUES (?, ?, ?)`,
-    ).run(userId, 1000000, 0);
+      `INSERT INTO paper_wallets (id, cash_balance, used_capital, updated_at) VALUES (?, ?, ?, ?)`,
+    ).run(userId, 1000000, 0, new Date().toISOString());
     return { cash_balance: 1000000, used_capital: 0 };
   }
   return { cash_balance: wallet.cash_balance, used_capital: wallet.used_capital };

@@ -1,11 +1,13 @@
 /** Dependency-free probe: verifies Vercel function plumbing works. */
 
-export default function handler(): Response {
-  return new Response(JSON.stringify({ ok: true, fn: 'ping', ts: new Date().toISOString() }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'X-Quantora-Fn': 'ping-v1',
-    },
+import type { ServerResponse } from 'node:http';
+
+export default function handler(_req: unknown, res: ServerResponse): void {
+  const text = JSON.stringify({ ok: true, fn: 'ping', ts: new Date().toISOString() });
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(text),
+    'X-Quantora-Fn': 'ping-v2',
   });
+  res.end(text);
 }
