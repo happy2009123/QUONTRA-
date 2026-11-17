@@ -318,6 +318,7 @@ export interface PaperPosition {
 
 export interface PaperOrder {
   id: string;
+  instrument_id: string;
   direction: string;
   quantity: number;
   price: number;
@@ -452,7 +453,7 @@ export function getOpenPositions(db: Db, userId: string): PaperPosition[] {
 export function getOrderHistory(db: Db, userId: string): PaperOrder[] {
   const rows = db
     .prepare(
-      `SELECT id, direction, quantity, price, status, order_type, created_at
+      `SELECT id, instrument_id, direction, quantity, price, status, order_type, created_at
        FROM paper_orders WHERE account_id = ? ORDER BY created_at DESC`,
     ).all(userId) as unknown as PaperOrder[];
   return rows;
@@ -483,6 +484,12 @@ export function resetPaperAccount(db: Db, userId: string) {
   // Reset wallet
   db.prepare(
     `UPDATE paper_wallets SET cash_balance = 1000000, used_capital = 0 WHERE id = ?`,
+  ).run(userId);
+
+  // Pending orders held reservations against the cash being wholesale restored —
+  // cancel them so a later trigger cannot double-charge the fresh balance.
+  db.prepare(
+    `UPDATE paper_orders SET status = 'CANCELLED' WHERE account_id = ? AND status = 'PENDING'`,
   ).run(userId);
 
   // Close all open positions

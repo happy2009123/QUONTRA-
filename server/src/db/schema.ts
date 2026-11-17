@@ -309,7 +309,7 @@ CREATE TABLE IF NOT EXISTS paper_orders (
   quantity           REAL NOT NULL,
   price              REAL NOT NULL,
   status             TEXT NOT NULL,          -- PENDING|FILLED|CANCELLED|REJECTED
-  order_type         TEXT NOT NULL,          -- MARKET|LIMIT
+   order_type         TEXT NOT NULL,          -- MARKET|LIMIT|STOP|STOP_LOSS|TAKE_PROFIT
   created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_paper_orders_account ON paper_orders(account_id);

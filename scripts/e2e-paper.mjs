@@ -156,6 +156,106 @@ console.log('\n9. INSUFFICIENT_BALANCE');
 r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'BUY', orderType: 'MARKET', quantity: 1000000 });
 check('INSUFFICIENT_BALANCE', r.status === 400 && r.body?.error?.code === 'INSUFFICIENT_BALANCE', JSON.stringify(r.body).slice(0, 200));
 
+// 10. STOP_LOSS / TAKE_PROFIT validation
+console.log('\n10. SL/TP validation');
+r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'BUY', orderType: 'STOP_LOSS', quantity: 1, price: lastPrice });
+check('BUY STOP_LOSS rejected', r.status === 400, JSON.stringify(r.body));
+r = await post('/api/paper-order', { instrumentId: 'eq-tcs', direction: 'SELL', orderType: 'STOP_LOSS', quantity: 1, price: lastPrice * 0.5 });
+check('SL without position rejected', r.status === 400 && r.body?.error?.code === 'INSUFFICIENT_POSITION', JSON.stringify(r.body));
+r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'SELL', orderType: 'TAKE_PROFIT', quantity: 1 });
+check('TP without trigger price rejected', r.status === 400, JSON.stringify(r.body));
+
+// 11. TAKE_PROFIT far below market triggers on next read
+console.log('\n11. TAKE_PROFIT triggers');
+r = await get('/api/paper-positions');
+const posA = (r.body?.data ?? []).find((p) => p.instrument_id === 'eq-reliance');
+const qtyA = posA ? posA.quantity : 0;
+const tpTrigger = Math.max(1, Math.floor(lastPrice * 0.5));
+r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'SELL', orderType: 'TAKE_PROFIT', quantity: 1, price: tpTrigger });
+check('TP placed PENDING', r.status === 200 && r.body?.data?.status === 'PENDING', JSON.stringify(r.body));
+const tpId = r.body?.data?.orderId;
+r = await get('/api/paper-orders');
+const tpOrder = (r.body?.data ?? []).find((o) => o.id === tpId);
+check('TP swept to FILLED', tpOrder && tpOrder.status === 'FILLED', JSON.stringify(tpOrder));
+check('TP filled near market (not at deep trigger)', tpOrder && Math.abs(tpOrder.price - lastPrice) < lastPrice * 0.1, `${tpOrder?.price} vs ${lastPrice}`);
+r = await get('/api/paper-positions');
+const posB = (r.body?.data ?? []).find((p) => p.instrument_id === 'eq-reliance');
+check('position reduced by TP', posB && posB.quantity === qtyA - 1, `${posB?.quantity} vs ${qtyA}`);
+
+// 12. BUY STOP below market triggers on next read (fills at market, top-up charged)
+console.log('\n12. BUY STOP triggers');
+const stopTrigger = Math.max(1, Math.floor(lastPrice * 0.5));
+r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'BUY', orderType: 'STOP', quantity: 1, price: stopTrigger });
+check('stop placed PENDING', r.status === 200 && r.body?.data?.status === 'PENDING', JSON.stringify(r.body));
+const stopId = r.body?.data?.orderId;
+r = await get('/api/paper-orders');
+const stopOrder = (r.body?.data ?? []).find((o) => o.id === stopId);
+check('stop swept to FILLED', stopOrder && stopOrder.status === 'FILLED', JSON.stringify(stopOrder));
+check('stop filled at market, above trigger', stopOrder && stopOrder.price > stopTrigger, `${stopOrder?.price} vs trigger ${stopTrigger}`);
+r = await get('/api/paper-positions');
+const posC = (r.body?.data ?? []).find((p) => p.instrument_id === 'eq-reliance');
+check('position grew by 1', posC && posC.quantity === qtyA, `${posC?.quantity} vs ${qtyA}`);
+
+// 13. Modify pending LIMIT (price + quantity), reservation rebalanced, cancel refunds new terms
+console.log('\n13. MODIFY pending LIMIT');
+const modLimit = Math.max(1, Math.floor(lastPrice * 0.4));
+r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'BUY', orderType: 'LIMIT', quantity: 1, price: modLimit });
+check('limit placed', r.status === 200 && r.body?.data?.status === 'PENDING', JSON.stringify(r.body));
+const modId = r.body?.data?.orderId;
+const pfBeforeMod = (await get('/api/paper-portfolio')).body.data;
+const newPrice = Math.max(1, Math.floor(lastPrice * 0.3));
+r = await post('/api/paper-order/modify', { orderId: modId, price: newPrice, quantity: 2 });
+check('modify 200', r.status === 200 && r.body?.data?.price === newPrice && r.body?.data?.quantity === 2, JSON.stringify(r.body));
+const pfAfterMod = (await get('/api/paper-portfolio')).body.data;
+check(
+  'reservation rebalanced (available+used invariant)',
+  Math.abs((pfAfterMod.available_capital + pfAfterMod.used_capital) - (pfBeforeMod.available_capital + pfBeforeMod.used_capital)) < 0.01,
+  `${pfBeforeMod.available_capital + pfBeforeMod.used_capital} vs ${pfAfterMod.available_capital + pfAfterMod.used_capital}`,
+);
+r = await get('/api/paper-orders');
+const modOrder = (r.body?.data ?? []).find((o) => o.id === modId);
+check('order reflects new terms', modOrder && modOrder.price === newPrice && modOrder.quantity === 2, JSON.stringify(modOrder));
+r = await post('/api/paper-cancel', { orderId: modId });
+const expectedRefund = newPrice * 2 + newPrice * 2 * 0.0005;
+check('cancel refunds NEW reservation', r.status === 200 && Math.abs((r.body?.data?.capitalReturned ?? 0) - expectedRefund) < 0.01, `${r.body?.data?.capitalReturned} vs ${expectedRefund}`);
+
+// 14. Modify validation
+console.log('\n14. MODIFY validation');
+r = await post('/api/paper-order/modify', { orderId: modId, price: newPrice });
+check('modify cancelled order 409', r.status === 409, JSON.stringify(r.body));
+r = await post('/api/paper-order/modify', { orderId: 'nope', price: 10 });
+check('modify unknown order 404', r.status === 404, JSON.stringify(r.body));
+r = await post('/api/paper-order/modify', { orderId: modId });
+check('modify without fields 400', r.status === 400, JSON.stringify(r.body));
+r = await post('/api/paper-order/modify', { orderId: modId, price: -1 });
+check('modify negative price 400', r.status === 400, JSON.stringify(r.body));
+
+// 15. STOP_LOSS above market triggers on next read (protective sell)
+console.log('\n15. STOP_LOSS triggers');
+const slTrigger = Math.ceil(lastPrice * 1.5);
+r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'SELL', orderType: 'STOP_LOSS', quantity: 1, price: slTrigger });
+check('SL placed PENDING', r.status === 200 && r.body?.data?.status === 'PENDING', JSON.stringify(r.body));
+const slId = r.body?.data?.orderId;
+r = await get('/api/paper-orders');
+const slOrder = (r.body?.data ?? []).find((o) => o.id === slId);
+check('SL swept to FILLED', slOrder && slOrder.status === 'FILLED', JSON.stringify(slOrder));
+check('SL filled at market, below trigger', slOrder && slOrder.price <= slTrigger, `${slOrder?.price} vs ${slTrigger}`);
+
+// 16. REJECTED path: stop-buy that cannot cover its top-up releases the reservation
+console.log('\n16. REJECTED releases reservation');
+const q16 = (await get('/api/paper-portfolio')).body.data.available_capital;
+const px16 = (await get('/api/quotes?ids=eq-reliance')).body?.data?.[0]?.quote?.lastPrice;
+const trig16 = Math.max(1, Math.floor(px16 * 0.5));
+const qty16 = Math.floor(q16 / (trig16 * 1.0005));
+r = await post('/api/paper-order', { instrumentId: 'eq-reliance', direction: 'BUY', orderType: 'STOP', quantity: qty16, price: trig16 });
+check('oversized stop accepted (reserved)', r.status === 200 && r.body?.data?.status === 'PENDING', JSON.stringify(r.body).slice(0, 200));
+const rejId = r.body?.data?.orderId;
+r = await get('/api/paper-orders');
+const rejOrder = (r.body?.data ?? []).find((o) => o.id === rejId);
+check('stop REJECTED (cannot cover top-up)', rejOrder && rejOrder.status === 'REJECTED', JSON.stringify(rejOrder));
+const pfRej = (await get('/api/paper-portfolio')).body.data;
+check('reservation released after reject', Math.abs(pfRej.available_capital - q16) < 0.01, `${pfRej.available_capital} vs ${q16}`);
+
 srv.close();
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

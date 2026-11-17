@@ -9,6 +9,7 @@ import {
   EmptyState,
   ErrorState,
   Input,
+  Modal,
   PageHeader,
   Select,
   SegmentedControl,
@@ -499,7 +500,7 @@ function OpportunityRow({ opportunity }: { opportunity: OpportunitySummary }) {
 
 function OrderPlacementSection() {
   const [direction, setDirection] = useState<'BUY' | 'SELL'>('BUY');
-  const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET');
+  const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LOSS' | 'TAKE_PROFIT'>('MARKET');
   const [quantity, setQuantity] = useState(1);
   const [price, setPrice] = useState(0);
   const [instrumentId, setInstrumentId] = useState('eq-reliance');
@@ -512,9 +513,31 @@ function OrderPlacementSection() {
     { value: 'fx-usdinr', label: 'USD/INR' },
   ] as const;
 
+  const orderTypeOptions = [
+    { value: 'MARKET', label: 'Market' },
+    { value: 'LIMIT', label: 'Limit' },
+    { value: 'STOP', label: 'Stop' },
+    { value: 'STOP_LOSS', label: 'Stop-loss' },
+    { value: 'TAKE_PROFIT', label: 'Take-profit' },
+  ] as const;
+
+  const protective = orderType === 'STOP_LOSS' || orderType === 'TAKE_PROFIT';
+  const needsPrice = orderType !== 'MARKET';
+
+  const handleTypeChange = (t: 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LOSS' | 'TAKE_PROFIT') => {
+    setOrderType(t);
+    if (t === 'STOP_LOSS' || t === 'TAKE_PROFIT') setDirection('SELL');
+  };
+
   const handlePlaceOrder = async () => {
     setLoading(true);
     setFeedback(null);
+
+    if (needsPrice && !(price > 0)) {
+      setFeedback({ kind: 'error', text: `A positive ${orderType === 'LIMIT' ? 'limit' : 'trigger'} price is required` });
+      setLoading(false);
+      return;
+    }
 
     try {
       const response = await fetch('/api/paper-order', {
@@ -528,7 +551,7 @@ function OrderPlacementSection() {
           direction,
           orderType,
           quantity: Number(quantity),
-          price: orderType === 'LIMIT' ? Number(price) : undefined,
+          price: needsPrice ? Number(price) : undefined,
         }),
       });
 
@@ -537,15 +560,16 @@ function OrderPlacementSection() {
       if (response.ok && payload.data) {
         const order = payload.data;
         setQuantity(1);
-        if (orderType === 'LIMIT') setPrice(0);
+        if (needsPrice) setPrice(0);
         // Refresh portfolio summary
         const portfolioResp = await fetch('/api/paper-portfolio');
         const portfolioPayload = await portfolioResp.json();
         const available = portfolioPayload.data?.available_capital;
         const priceLabel = order.price ? ` @ ₹${Number(order.price).toLocaleString()}` : '';
+        const restingNote = order.status === 'PENDING' ? ` (${order.orderType} resting)` : '';
         setFeedback({
           kind: 'success',
-          text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}. Available: ₹${Number(available ?? 0).toLocaleString()}`,
+          text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}${restingNote}. Available: ₹${Number(available ?? 0).toLocaleString()}`,
         });
         setTimeout(() => setFeedback(null), 5000);
         window.dispatchEvent(new Event('paper-updated'));
@@ -582,12 +606,16 @@ function OrderPlacementSection() {
           >
             {loading ? 'Sending...' : 'Place Order'}
           </Button>
-          <Button variant="ghost" onClick={() => setDirection('BUY')}>
-            BUY
-          </Button>
-          <Button variant="ghost" onClick={() => setDirection('SELL')}>
-            SELL
-          </Button>
+          {!protective && (
+            <>
+              <Button variant="ghost" onClick={() => setDirection('BUY')}>
+                BUY
+              </Button>
+              <Button variant="ghost" onClick={() => setDirection('SELL')}>
+                SELL
+              </Button>
+            </>
+          )}
         </>
       }
     >
@@ -602,25 +630,31 @@ function OrderPlacementSection() {
             size="sm"
           />
         </div>
-        <div>
-          <label className="text-[11px] uppercase text-mut-2 mb-1">Direction</label>
-          <SegmentedControl
-            options={[{ value: 'BUY', label: 'BUY' }, { value: 'SELL', label: 'SELL' }]}
-            value={direction}
-            onChange={setDirection}
-            label="Direction"
-          />
-        </div>
+        {protective ? (
+          <p className="text-[11px] text-mut-2">
+            {orderType === 'STOP_LOSS'
+              ? 'Stop-loss: sells your open position when the trigger price is hit.'
+              : 'Take-profit: sells your open position when the target price is hit.'}
+          </p>
+        ) : (
+          <div>
+            <label className="text-[11px] uppercase text-mut-2 mb-1">Direction</label>
+            <SegmentedControl
+              options={[{ value: 'BUY', label: 'BUY' }, { value: 'SELL', label: 'SELL' }]}
+              value={direction}
+              onChange={setDirection}
+              label="Direction"
+            />
+          </div>
+        )}
         <div>
           <label className="text-[11px] uppercase text-mut-2 mb-1">Order Type</label>
-          <SegmentedControl
-            options={[
-              { value: 'MARKET', label: 'Market' },
-              { value: 'LIMIT', label: 'Limit' },
-            ]}
+          <Select
             value={orderType}
-            onChange={setOrderType}
+            onChange={handleTypeChange}
             label="Order Type"
+            options={orderTypeOptions.map((o) => ({ value: o.value, label: o.label }))}
+            size="sm"
           />
         </div>
         <div>
@@ -632,9 +666,11 @@ function OrderPlacementSection() {
             placeholder="Qty"
           />
         </div>
-        {orderType === 'LIMIT' && (
+        {needsPrice && (
           <div>
-            <label className="text-[11px] uppercase text-mut-2 mb-1">Limit Price</label>
+            <label className="text-[11px] uppercase text-mut-2 mb-1">
+              {orderType === 'LIMIT' ? 'Limit Price' : 'Trigger Price'}
+            </label>
             <Input
               value={price}
               onChange={(e) => setPrice(Number(e.target.value) || 0)}
@@ -672,6 +708,7 @@ interface PaperPosition {
 
 interface PaperOrder {
   id: string;
+  instrument_id: string;
   direction: string;
   order_type: string;
   quantity: number;
@@ -700,6 +737,12 @@ function PaperPortfolioSection() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [closing, setClosing] = useState<string | null>(null);
+  const [modifying, setModifying] = useState<PaperOrder | null>(null);
+  const [modPrice, setModPrice] = useState('');
+  const [modQty, setModQty] = useState('');
+  const [modBusy, setModBusy] = useState(false);
+  const [modError, setModError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -752,6 +795,62 @@ function PaperPortfolioSection() {
     }
   };
 
+  const closePosition = async (row: PaperPosition) => {
+    setClosing(row.instrument_id);
+    try {
+      const res = await fetch('/api/paper-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: 'desk@quantora.demo',
+          instrumentId: row.instrument_id,
+          direction: 'SELL',
+          orderType: 'MARKET',
+          quantity: row.quantity,
+        }),
+      });
+      const payload = (await res.json()) as { data?: { status?: string }; error?: { message?: string } };
+      if (!res.ok) throw new Error(payload.error?.message ?? 'Close failed');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Close failed');
+    } finally {
+      setClosing(null);
+    }
+  };
+
+  const openModify = (row: PaperOrder) => {
+    setModifying(row);
+    setModPrice(String(row.price));
+    setModQty(String(row.quantity));
+    setModError(null);
+  };
+
+  const submitModify = async () => {
+    if (!modifying) return;
+    setModBusy(true);
+    setModError(null);
+    try {
+      const res = await fetch('/api/paper-order/modify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: modifying.id,
+          price: Number(modPrice),
+          quantity: Number(modQty),
+        }),
+      });
+      const payload = (await res.json()) as { data?: unknown; error?: { message?: string } };
+      if (!res.ok) throw new Error(payload.error?.message ?? 'Modify failed');
+      setModifying(null);
+      await load();
+    } catch (e) {
+      setModError(e instanceof Error ? e.message : 'Modify failed');
+    } finally {
+      setModBusy(false);
+    }
+  };
+
   const positionColumns = [
     {
       key: 'instrument',
@@ -777,6 +876,21 @@ function PaperPortfolioSection() {
       align: 'right' as const,
       cell: (row: PaperPosition) => (
         <span className={row.unrealised_pnl >= 0 ? 'text-pos' : 'text-neg'}>{signedInr(row.unrealised_pnl)}</span>
+      ),
+    },
+    {
+      key: 'action',
+      header: '',
+      align: 'right' as const,
+      cell: (row: PaperPosition) => (
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={closing === row.instrument_id}
+          onClick={() => void closePosition(row)}
+        >
+          Close
+        </Button>
       ),
     },
   ];
@@ -819,19 +933,25 @@ function PaperPortfolioSection() {
       align: 'right' as const,
       cell: (row: PaperOrder) =>
         row.status === 'PENDING' ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={cancelling === row.id}
-            onClick={() => void cancelOrder(row.id)}
-          >
-            Cancel
-          </Button>
+          <div className="flex justify-end gap-1.5">
+            <Button variant="ghost" size="sm" onClick={() => openModify(row)}>
+              Modify
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={cancelling === row.id}
+              onClick={() => void cancelOrder(row.id)}
+            >
+              Cancel
+            </Button>
+          </div>
         ) : null,
     },
   ];
 
   return (
+    <>
     <Card
       title="Paper Portfolio"
       subtitle="Simulated positions and orders — refreshed on every trade"
@@ -895,11 +1015,44 @@ function PaperPortfolioSection() {
               loading={loading}
               dense
               emptyTitle="No orders yet"
-              emptyDescription="Orders you place appear here with fill status and cancellation."
+              emptyDescription="Orders you place appear here with fill status, modification and cancellation."
             />
           </div>
         </>
       )}
     </Card>
+    <Modal
+      open={modifying !== null}
+      onClose={() => setModifying(null)}
+      title="Modify pending order"
+      description={
+        modifying
+          ? `${modifying.direction} ${modifying.quantity} ${INSTRUMENT_BY_ID[modifying.instrument_id]?.symbol ?? modifying.instrument_id} · ${modifying.order_type}`
+          : undefined
+      }
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setModifying(null)} disabled={modBusy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void submitModify()} loading={modBusy}>
+            Save changes
+          </Button>
+        </div>
+      }
+    >
+      <div className="grid gap-3">
+        <div>
+          <label className="text-[11px] uppercase text-mut-2 mb-1">Price</label>
+          <Input value={modPrice} onChange={(e) => setModPrice(e.target.value)} type="number" placeholder="Price" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase text-mut-2 mb-1">Quantity</label>
+          <Input value={modQty} onChange={(e) => setModQty(e.target.value)} type="number" placeholder="Qty" />
+        </div>
+        {modError && <ErrorState message={modError} />}
+      </div>
+    </Modal>
+    </>
   );
 }

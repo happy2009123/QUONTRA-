@@ -648,7 +648,7 @@ export function buildRouter(deps: RouterDeps): Router {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
-    await sweepPendingLimits(userId);
+    await sweepPendingOrders(userId);
     return ok(getPortfolioSummary(db, userId));
   });
 
@@ -656,7 +656,7 @@ export function buildRouter(deps: RouterDeps): Router {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
-    await sweepPendingLimits(userId);
+    await sweepPendingOrders(userId);
     return ok(getOpenPositions(db, userId));
   });
 
@@ -664,7 +664,7 @@ export function buildRouter(deps: RouterDeps): Router {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
-    await sweepPendingLimits(userId);
+    await sweepPendingOrders(userId);
     return ok(getOrderHistory(db, userId));
   });
 
@@ -753,24 +753,43 @@ export function buildRouter(deps: RouterDeps): Router {
     return px;
   }
 
-  /** BUY fill: cash was reserved at placement — convert the reservation into a position. */
+  /**
+   * BUY fill: cash was reserved at placement — convert the reservation into a
+   * position. `reservedCost` is what left cash at placement; a fill at a better
+   * price refunds the difference, a stop-buy triggered above its trigger charges
+   * the top-up (rejected if cash cannot cover it).
+   */
   function fillBuyOrder(args: {
     orderId: string;
     userId: string;
     instrumentId: string;
     quantity: number;
     execPrice: number;
-    totalCost: number;
+    reservedCost: number;
     now: string;
   }): void {
-    const { orderId, userId, instrumentId, quantity, execPrice, totalCost, now } = args;
+    const { orderId, userId, instrumentId, quantity, execPrice, reservedCost, now } = args;
+    const notional = execPrice * quantity;
+    const positionCost = notional + notional * FEE_RATE;
+    const delta = positionCost - reservedCost;
+
+    if (delta > 0) {
+      getWalletBalance(db, userId);
+      const wallet = db
+        .prepare('SELECT cash_balance FROM paper_wallets WHERE id = ?')
+        .get(userId) as { cash_balance: number } | undefined;
+      if (!wallet || wallet.cash_balance < delta) {
+        throw new AppError('INSUFFICIENT_BALANCE', 'Reserved capital does not cover the fill top-up');
+      }
+    }
+
     db.prepare(`UPDATE paper_orders SET status = 'FILLED', price = ? WHERE id = ?`).run(execPrice, orderId);
 
     const pos = getPosition(userId, instrumentId);
     const qty0 = pos && pos.quantity > 0 ? pos.quantity : 0;
     const avg0 = qty0 > 0 ? pos!.avg_price : 0;
     const newQty = qty0 + quantity;
-    const newAvg = qty0 > 0 ? (avg0 * qty0 + totalCost) / newQty : totalCost / quantity;
+    const newAvg = qty0 > 0 ? (avg0 * qty0 + positionCost) / newQty : positionCost / quantity;
     const marketValue = execPrice * newQty;
     const unrealised = (execPrice - newAvg) * newQty;
 
@@ -784,6 +803,31 @@ export function buildRouter(deps: RouterDeps): Router {
         `INSERT INTO paper_positions (id, account_id, instrument_id, quantity, avg_price, market_value, unrealised_pnl, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(`pos-${userId}-${instrumentId}`, userId, instrumentId, newQty, newAvg, marketValue, unrealised, now);
+    }
+
+    if (delta > 0.005) {
+      db.prepare(
+        `UPDATE paper_wallets SET cash_balance = cash_balance - ?, used_capital = used_capital + ?, updated_at = ? WHERE id = ?`,
+      ).run(delta, delta, now, userId);
+      db.prepare(
+        `UPDATE paper_accounts SET available_capital = available_capital - ?, used_capital = used_capital + ?, updated_at = ? WHERE user_id = ?`,
+      ).run(delta, delta, now, userId);
+      db.prepare(
+        `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+         VALUES (?, ?, 'BUY', ?, 'Fill top-up', ?, ?)`,
+      ).run(`tx-topup-${orderId}`, userId, delta, orderId, now);
+    } else if (delta < -0.005) {
+      const refund = -delta;
+      db.prepare(
+        `UPDATE paper_wallets SET cash_balance = cash_balance + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE id = ?`,
+      ).run(refund, refund, now, userId);
+      db.prepare(
+        `UPDATE paper_accounts SET available_capital = available_capital + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE user_id = ?`,
+      ).run(refund, refund, now, userId);
+      db.prepare(
+        `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+         VALUES (?, ?, 'REFUND', ?, 'Fill price improvement', ?, ?)`,
+      ).run(`tx-improve-${orderId}`, userId, refund, orderId, now);
     }
 
     db.prepare(
@@ -858,11 +902,36 @@ export function buildRouter(deps: RouterDeps): Router {
     }
   }
 
-  /** Fills resting LIMIT orders whose limit price has been crossed by the latest quote. */
-  async function sweepPendingLimits(userId: string): Promise<void> {
+  /** Whether a resting order's limit/trigger has been reached by quote `px`. */
+  function isOrderTriggered(order: PaperOrderRow, px: number): boolean {
+    switch (order.order_type) {
+      case 'LIMIT':
+        return order.direction === 'BUY' ? px <= order.price : px >= order.price;
+      case 'STOP':
+        // Stop-market: BUY triggers as price rises through the stop, SELL as it falls through.
+        return order.direction === 'BUY' ? px >= order.price : px <= order.price;
+      case 'STOP_LOSS':
+        // Protective SELL — fires when price falls to/through the stop.
+        return px <= order.price;
+      case 'TAKE_PROFIT':
+        // Protective SELL — fires when price rises to/through the target.
+        return px >= order.price;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Fills resting LIMIT/STOP/STOP_LOSS/TAKE_PROFIT orders whose price has been
+   * crossed by the latest quote. Fills use the observed quote — never a
+   * fabricated price. Orders that can no longer fill (cash or position gone)
+   * are marked REJECTED rather than resting forever.
+   */
+  async function sweepPendingOrders(userId: string): Promise<void> {
     const pending = db
       .prepare(
-        `SELECT * FROM paper_orders WHERE account_id = ? AND status = 'PENDING' AND order_type = 'LIMIT'`,
+        `SELECT * FROM paper_orders WHERE account_id = ? AND status = 'PENDING'
+         AND order_type IN ('LIMIT', 'STOP', 'STOP_LOSS', 'TAKE_PROFIT')`,
       )
       .all(userId) as unknown as PaperOrderRow[];
     if (pending.length === 0) return;
@@ -879,8 +948,7 @@ export function buildRouter(deps: RouterDeps): Router {
     for (const order of pending) {
       const px = pxById.get(order.instrument_id);
       if (!px || px <= 0) continue;
-      const crossed = order.direction === 'BUY' ? px <= order.price : px >= order.price;
-      if (!crossed) continue;
+      if (!isOrderTriggered(order, px)) continue;
       const now = new Date().toISOString();
       try {
         if (order.direction === 'BUY') {
@@ -890,8 +958,8 @@ export function buildRouter(deps: RouterDeps): Router {
             userId,
             instrumentId: order.instrument_id,
             quantity: order.quantity,
-            execPrice: order.price,
-            totalCost: notional + notional * FEE_RATE,
+            execPrice: px,
+            reservedCost: notional + notional * FEE_RATE,
             now,
           });
         } else {
@@ -900,17 +968,39 @@ export function buildRouter(deps: RouterDeps): Router {
             userId,
             instrumentId: order.instrument_id,
             quantity: order.quantity,
-            execPrice: order.price,
+            execPrice: px,
             now,
           });
         }
       } catch {
-        // position/capital changed under the order — leave it for manual cancel
+        // Cash or position can no longer support the fill — reject honestly.
+        const rejected = db
+          .prepare(`UPDATE paper_orders SET status = 'REJECTED' WHERE id = ? AND status = 'PENDING'`)
+          .run(order.id);
+        if (rejected.changes > 0 && order.direction === 'BUY') {
+          // Release the reservation the rejected fill can no longer use.
+          const notional = order.price * order.quantity;
+          const refund = notional + notional * FEE_RATE;
+          getWalletBalance(db, userId);
+          db.prepare(
+            `UPDATE paper_wallets SET cash_balance = cash_balance + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE id = ?`,
+          ).run(refund, refund, now, userId);
+          db.prepare(
+            `UPDATE paper_accounts SET available_capital = available_capital + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE user_id = ?`,
+          ).run(refund, refund, now, userId);
+          db.prepare(
+            `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+             VALUES (?, ?, 'REFUND', ?, 'Order rejected — reservation released', ?, ?)`,
+          ).run(`tx-reject-${order.id}`, userId, refund, order.id, now);
+        }
       }
     }
   }
 
   // ── Order Placement ──────────────────────────────────────────────────────
+  const ORDER_TYPES = ['MARKET', 'LIMIT', 'STOP', 'STOP_LOSS', 'TAKE_PROFIT'] as const;
+  type OrderType = (typeof ORDER_TYPES)[number];
+
   router.post('/api/paper-order', async (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
@@ -919,27 +1009,36 @@ export function buildRouter(deps: RouterDeps): Router {
     const body = (ctx.body ?? {}) as Record<string, unknown>;
     const instrumentId = typeof body.instrumentId === 'string' ? body.instrumentId : '';
     const direction = body.direction === 'BUY' || body.direction === 'SELL' ? body.direction : null;
-    const orderType = body.orderType === 'MARKET' || body.orderType === 'LIMIT' ? body.orderType : null;
+    const orderType =
+      typeof body.orderType === 'string' && (ORDER_TYPES as readonly string[]).includes(body.orderType)
+        ? (body.orderType as OrderType)
+        : null;
     const quantity = typeof body.quantity === 'number' && Number.isInteger(body.quantity) && body.quantity > 0 ? body.quantity : 0;
     const limitPrice = typeof body.price === 'number' && Number.isFinite(body.price) ? body.price : 0;
+    const resting = orderType !== null && orderType !== 'MARKET';
 
     if (!instrumentId || !direction || !orderType || quantity <= 0) {
-      throw new AppError('VALIDATION_ERROR', 'instrumentId, direction (BUY|SELL), orderType (MARKET|LIMIT) and a positive integer quantity are required');
+      throw new AppError('VALIDATION_ERROR', `instrumentId, direction (BUY|SELL), orderType (${ORDER_TYPES.join('|')}) and a positive integer quantity are required`);
     }
-    if (orderType === 'LIMIT' && limitPrice <= 0) {
-      throw new AppError('VALIDATION_ERROR', 'A positive limit price is required for LIMIT orders');
+    if (resting && limitPrice <= 0) {
+      const label = orderType === 'LIMIT' ? 'limit' : 'trigger';
+      throw new AppError('VALIDATION_ERROR', `A positive ${label} price is required for ${orderType} orders`);
+    }
+    if ((orderType === 'STOP_LOSS' || orderType === 'TAKE_PROFIT') && direction !== 'SELL') {
+      throw new AppError('VALIDATION_ERROR', `${orderType} orders must be SELL — they exit a long position when the trigger is hit`);
     }
     if (!getInstrument(db, instrumentId)) {
       throw new AppError('NOT_FOUND', `Unknown instrument "${instrumentId}"`);
     }
 
-    // Opportunistically fill any resting LIMIT orders first
-    await sweepPendingLimits(userId);
+    // Opportunistically fill any resting orders first
+    await sweepPendingOrders(userId);
 
     // Get account state (auto-create on first touch, same as GET /api/paper-account)
     getPaperAccount(db, userId) ?? upsertPaperAccount(db, userId);
 
-    // Execution price: quote-backed for MARKET (never fabricated), limit price for LIMIT
+    // Execution price: quote-backed for MARKET (never fabricated); limit/trigger
+    // price for resting orders (also the amount reserved for BUY orders).
     const execPrice = orderType === 'MARKET' ? await resolveMarketPrice(instrumentId) : limitPrice;
     const notional = execPrice * quantity;
     const brokerage = notional * FEE_RATE;
@@ -983,7 +1082,7 @@ export function buildRouter(deps: RouterDeps): Router {
     let status: 'PENDING' | 'FILLED' = 'PENDING';
     if (orderType === 'MARKET') {
       if (direction === 'BUY') {
-        fillBuyOrder({ orderId, userId, instrumentId, quantity, execPrice, totalCost, now });
+        fillBuyOrder({ orderId, userId, instrumentId, quantity, execPrice, reservedCost: totalCost, now });
       } else {
         fillSellOrder({ orderId, userId, instrumentId, quantity, execPrice, now });
       }
@@ -1004,6 +1103,104 @@ export function buildRouter(deps: RouterDeps): Router {
     });
   });
 
+  // ── Order Modification ───────────────────────────────────────────────────
+  router.post('/api/paper-order/modify', async (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const orderId = typeof body.orderId === 'string' ? body.orderId : '';
+    const newPrice = typeof body.price === 'number' && Number.isFinite(body.price) ? body.price : null;
+    const newQuantity =
+      typeof body.quantity === 'number' && Number.isInteger(body.quantity) && body.quantity > 0 ? body.quantity : null;
+    v.throwIfInvalid();
+
+    if (!orderId) throw new AppError('VALIDATION_ERROR', 'orderId is required');
+    if (newPrice === null && newQuantity === null) {
+      throw new AppError('VALIDATION_ERROR', 'price and/or quantity are required to modify an order');
+    }
+    if (newPrice !== null && newPrice <= 0) {
+      throw new AppError('VALIDATION_ERROR', 'price must be positive');
+    }
+
+    // The order may have been crossed while the user was editing it
+    await sweepPendingOrders(userId);
+
+    const order = db
+      .prepare('SELECT * FROM paper_orders WHERE id = ? AND account_id = ?')
+      .get(orderId, userId) as PaperOrderRow | undefined;
+    if (!order) throw new AppError('NOT_FOUND', 'Order not found');
+    if (order.status !== 'PENDING') throw new AppError('INVALID_STATUS', 'Only pending orders can be modified');
+    if (order.order_type === 'MARKET') {
+      throw new AppError('INVALID_STATUS', 'Market orders fill immediately and cannot be modified');
+    }
+
+    const price0 = order.price;
+    const qty0 = order.quantity;
+    const price1 = newPrice ?? price0;
+    const qty1 = newQuantity ?? qty0;
+    const now = new Date().toISOString();
+
+    if (order.direction === 'BUY') {
+      // Re-balance the capital reservation: top-up what the new terms need,
+      // refund what the old terms over-reserved.
+      const n0 = price0 * qty0;
+      const res0 = n0 + n0 * FEE_RATE;
+      const n1 = price1 * qty1;
+      const res1 = n1 + n1 * FEE_RATE;
+      const delta = res1 - res0;
+      if (delta > 0) {
+        getWalletBalance(db, userId);
+        const wallet = db
+          .prepare('SELECT cash_balance FROM paper_wallets WHERE id = ?')
+          .get(userId) as { cash_balance: number } | undefined;
+        if (!wallet || wallet.cash_balance < delta) {
+          throw new AppError('INSUFFICIENT_BALANCE', `Modification needs ₹${delta.toFixed(2)} more reserved capital than is available`);
+        }
+        db.prepare(
+          `UPDATE paper_wallets SET cash_balance = cash_balance - ?, used_capital = used_capital + ?, updated_at = ? WHERE id = ?`,
+        ).run(delta, delta, now, userId);
+        db.prepare(
+          `UPDATE paper_accounts SET available_capital = available_capital - ?, used_capital = used_capital + ?, updated_at = ? WHERE user_id = ?`,
+        ).run(delta, delta, now, userId);
+        db.prepare(
+          `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+           VALUES (?, ?, 'BUY', ?, 'Order modified (top-up)', ?, ?)`,
+        ).run(`tx-mod-${orderId}`, userId, delta, orderId, now);
+      } else if (delta < -0.005) {
+        const refund = -delta;
+        db.prepare(
+          `UPDATE paper_wallets SET cash_balance = cash_balance + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE id = ?`,
+        ).run(refund, refund, now, userId);
+        db.prepare(
+          `UPDATE paper_accounts SET available_capital = available_capital + ?, used_capital = MAX(0, used_capital - ?), updated_at = ? WHERE user_id = ?`,
+        ).run(refund, refund, now, userId);
+        db.prepare(
+          `INSERT INTO paper_transactions (id, account_id, type, amount, description, related_id, created_at)
+           VALUES (?, ?, 'REFUND', ?, 'Order modified (refund)', ?, ?)`,
+        ).run(`tx-mod-${orderId}`, userId, refund, orderId, now);
+      }
+    } else if (newQuantity !== null) {
+      // SELL orders are backed by the position — the new quantity must fit.
+      const pos = getPosition(userId, order.instrument_id);
+      if (!pos || pos.quantity < qty1) {
+        throw new AppError('INSUFFICIENT_POSITION', 'Open position is smaller than the modified quantity');
+      }
+    }
+
+    db.prepare(`UPDATE paper_orders SET price = ?, quantity = ? WHERE id = ?`).run(price1, qty1, orderId);
+
+    return ok({
+      orderId,
+      status: 'PENDING',
+      direction: order.direction,
+      instrumentId: order.instrument_id,
+      quantity: qty1,
+      price: price1,
+      orderType: order.order_type,
+      modifiedAt: now,
+    });
+  });
+
   router.post('/api/paper-cancel', async (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
@@ -1013,7 +1210,7 @@ export function buildRouter(deps: RouterDeps): Router {
     if (!orderId) throw new AppError('VALIDATION_ERROR', 'orderId is required');
 
     // A resting LIMIT order may have been crossed while the user was deciding
-    await sweepPendingLimits(userId);
+    await sweepPendingOrders(userId);
 
     // Find the order
     const order = db
