@@ -668,6 +668,114 @@ export function buildRouter(deps: RouterDeps): Router {
     return ok(getOrderHistory(db, userId));
   });
 
+  router.get('/api/paper-strategy-performance', async (ctx) => {
+    const v = queryValidator(ctx.query);
+    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    v.throwIfInvalid();
+    await sweepPendingOrders(userId);
+
+    interface OrderAgg {
+      strategy_id: string;
+      name: string;
+      family: string;
+      orders: number;
+      filled: number;
+    }
+    interface TradeAgg {
+      strategy_id: string;
+      trades: number;
+      closed: number;
+      wins: number;
+      realised_pnl: number;
+    }
+
+    const orderRows = db
+      .prepare(
+        `SELECT o.strategy_id, s.name, s.family,
+                COUNT(*) AS orders,
+                SUM(CASE WHEN o.status = 'FILLED' THEN 1 ELSE 0 END) AS filled
+         FROM paper_orders o
+         JOIN strategies s ON s.id = o.strategy_id
+         WHERE o.account_id = ? AND o.strategy_id IS NOT NULL
+         GROUP BY o.strategy_id`,
+      )
+      .all(userId) as unknown as OrderAgg[];
+
+    // paper_trades has no account column — scope through the originating order
+    // (trade ids are `trade-${orderId}`).
+    const tradeRows = db
+      .prepare(
+        `SELECT t.strategy_id,
+                COUNT(*) AS trades,
+                SUM(CASE WHEN t.status = 'CLOSED' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN t.status = 'CLOSED' AND t.realised_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                COALESCE(SUM(CASE WHEN t.status = 'CLOSED' THEN t.realised_pnl ELSE 0 END), 0) AS realised_pnl
+         FROM paper_trades t
+         JOIN paper_orders o ON o.id = substr(t.id, 7)
+         WHERE o.account_id = ? AND t.strategy_id IS NOT NULL
+         GROUP BY t.strategy_id`,
+      )
+      .all(userId) as unknown as TradeAgg[];
+
+    const byStrategy = new Map<string, {
+      strategyId: string;
+      name: string;
+      family: string;
+      orders: number;
+      filled: number;
+      trades: number;
+      closed: number;
+      wins: number;
+      realisedPnl: number;
+      winRatePct: number | null;
+    }>();
+
+    for (const row of orderRows) {
+      byStrategy.set(row.strategy_id, {
+        strategyId: row.strategy_id,
+        name: row.name,
+        family: row.family,
+        orders: row.orders,
+        filled: row.filled,
+        trades: 0,
+        closed: 0,
+        wins: 0,
+        realisedPnl: 0,
+        winRatePct: null,
+      });
+    }
+    for (const row of tradeRows) {
+      const existing = byStrategy.get(row.strategy_id);
+      if (existing) {
+        existing.trades = row.trades;
+        existing.closed = row.closed;
+        existing.wins = row.wins;
+        existing.realisedPnl = row.realised_pnl;
+        existing.winRatePct = row.closed > 0 ? Math.round((row.wins / row.closed) * 1000) / 10 : null;
+      } else {
+        // Trade without a tagged order row (legacy data) — resolve the name once.
+        const strategy = db.prepare('SELECT name, family FROM strategies WHERE id = ?').get(row.strategy_id) as
+          | { name: string; family: string }
+          | undefined;
+        byStrategy.set(row.strategy_id, {
+          strategyId: row.strategy_id,
+          name: strategy?.name ?? row.strategy_id,
+          family: strategy?.family ?? '',
+          orders: 0,
+          filled: 0,
+          trades: row.trades,
+          closed: row.closed,
+          wins: row.wins,
+          realisedPnl: row.realised_pnl,
+          winRatePct: row.closed > 0 ? Math.round((row.wins / row.closed) * 1000) / 10 : null,
+        });
+      }
+    }
+
+    const rows = [...byStrategy.values()].sort((a, b) => b.orders - a.orders);
+    return ok(rows, { meta: { simulated: true } });
+  });
+
   router.get('/api/paper-transactions', (ctx) => {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
@@ -695,8 +803,15 @@ export function buildRouter(deps: RouterDeps): Router {
     const v = queryValidator(ctx.query);
     const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
     v.throwIfInvalid();
+    // paper_trades has no account column — scope through the originating order
+    // (trade ids are `trade-${orderId}` and every fill writes one).
     const rows = db
-      .prepare('SELECT * FROM paper_trades WHERE instrument_id IS NOT NULL ORDER BY opened_at DESC LIMIT 50')
+      .prepare(
+        `SELECT t.* FROM paper_trades t
+         JOIN paper_orders o ON o.id = substr(t.id, 7)
+         WHERE o.account_id = ? AND t.instrument_id IS NOT NULL
+         ORDER BY t.opened_at DESC LIMIT 50`,
+      )
       .all(userId) as unknown as PaperTransaction[];
     return ok({ trades: rows });
   });
@@ -730,6 +845,7 @@ export function buildRouter(deps: RouterDeps): Router {
     id: string;
     account_id: string;
     instrument_id: string;
+    strategy_id: string | null;
     direction: string;
     quantity: number;
     price: number;
@@ -767,8 +883,9 @@ export function buildRouter(deps: RouterDeps): Router {
     execPrice: number;
     reservedCost: number;
     now: string;
+    strategyId?: string | null;
   }): void {
-    const { orderId, userId, instrumentId, quantity, execPrice, reservedCost, now } = args;
+    const { orderId, userId, instrumentId, quantity, execPrice, reservedCost, now, strategyId } = args;
     const notional = execPrice * quantity;
     const positionCost = notional + notional * FEE_RATE;
     const delta = positionCost - reservedCost;
@@ -831,9 +948,9 @@ export function buildRouter(deps: RouterDeps): Router {
     }
 
     db.prepare(
-      `INSERT INTO paper_trades (id, instrument_id, direction, quantity, entry_price, status, opened_at, created_at)
-       VALUES (?, ?, 'BUY', ?, ?, 'OPEN', ?, ?)`,
-    ).run(`trade-${orderId}`, instrumentId, quantity, execPrice, now, now);
+      `INSERT INTO paper_trades (id, instrument_id, strategy_id, direction, quantity, entry_price, status, opened_at, created_at)
+       VALUES (?, ?, ?, 'BUY', ?, ?, 'OPEN', ?, ?)`,
+    ).run(`trade-${orderId}`, instrumentId, strategyId ?? null, quantity, execPrice, now, now);
   }
 
   /** SELL fill: credit proceeds, release cost basis, realise P&L, shrink the position. */
@@ -961,6 +1078,7 @@ export function buildRouter(deps: RouterDeps): Router {
             execPrice: px,
             reservedCost: notional + notional * FEE_RATE,
             now,
+            strategyId: order.strategy_id,
           });
         } else {
           fillSellOrder({
@@ -1031,6 +1149,15 @@ export function buildRouter(deps: RouterDeps): Router {
       throw new AppError('NOT_FOUND', `Unknown instrument "${instrumentId}"`);
     }
 
+    const strategyIdRaw = typeof body.strategyId === 'string' ? body.strategyId : '';
+    if (strategyIdRaw.length > 64) {
+      throw new AppError('VALIDATION_ERROR', 'strategyId must be at most 64 characters');
+    }
+    const strategyId: string | null = strategyIdRaw.length > 0 ? strategyIdRaw : null;
+    if (strategyId && !getStrategy(db, strategyId)) {
+      throw new AppError('NOT_FOUND', `Unknown strategy "${strategyId}"`);
+    }
+
     // Opportunistically fill any resting orders first
     await sweepPendingOrders(userId);
 
@@ -1060,9 +1187,9 @@ export function buildRouter(deps: RouterDeps): Router {
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO paper_orders (id, account_id, instrument_id, direction, quantity, price, status, order_type, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
-    ).run(orderId, userId, instrumentId, direction, quantity, execPrice, orderType, now);
+      `INSERT INTO paper_orders (id, account_id, instrument_id, strategy_id, direction, quantity, price, status, order_type, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
+    ).run(orderId, userId, instrumentId, strategyId, direction, quantity, execPrice, orderType, now);
 
     if (direction === 'BUY') {
       // Reserve capital (cash out now; converts to position cost on fill, refunded on cancel)
@@ -1082,7 +1209,7 @@ export function buildRouter(deps: RouterDeps): Router {
     let status: 'PENDING' | 'FILLED' = 'PENDING';
     if (orderType === 'MARKET') {
       if (direction === 'BUY') {
-        fillBuyOrder({ orderId, userId, instrumentId, quantity, execPrice, reservedCost: totalCost, now });
+        fillBuyOrder({ orderId, userId, instrumentId, quantity, execPrice, reservedCost: totalCost, now, strategyId });
       } else {
         fillSellOrder({ orderId, userId, instrumentId, quantity, execPrice, now });
       }
@@ -1094,6 +1221,7 @@ export function buildRouter(deps: RouterDeps): Router {
       status,
       direction,
       instrumentId,
+      strategyId,
       quantity,
       price: execPrice,
       orderType,

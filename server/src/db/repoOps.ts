@@ -319,6 +319,8 @@ export interface PaperPosition {
 export interface PaperOrder {
   id: string;
   instrument_id: string;
+  strategy_id: string | null;
+  strategy_name?: string | null;
   direction: string;
   quantity: number;
   price: number;
@@ -453,8 +455,11 @@ export function getOpenPositions(db: Db, userId: string): PaperPosition[] {
 export function getOrderHistory(db: Db, userId: string): PaperOrder[] {
   const rows = db
     .prepare(
-      `SELECT id, instrument_id, direction, quantity, price, status, order_type, created_at
-       FROM paper_orders WHERE account_id = ? ORDER BY created_at DESC`,
+      `SELECT o.id, o.instrument_id, o.strategy_id, s.name AS strategy_name,
+              o.direction, o.quantity, o.price, o.status, o.order_type, o.created_at
+       FROM paper_orders o
+       LEFT JOIN strategies s ON s.id = o.strategy_id
+       WHERE o.account_id = ? ORDER BY o.created_at DESC`,
     ).all(userId) as unknown as PaperOrder[];
   return rows;
 }

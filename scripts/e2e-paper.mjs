@@ -256,6 +256,39 @@ check('stop REJECTED (cannot cover top-up)', rejOrder && rejOrder.status === 'RE
 const pfRej = (await get('/api/paper-portfolio')).body.data;
 check('reservation released after reject', Math.abs(pfRej.available_capital - q16) < 0.01, `${pfRej.available_capital} vs ${q16}`);
 
+// 17. Strategy tagging + per-playbook performance
+console.log('\n17. Strategy tagging + performance');
+r = await post('/api/paper-order', {
+  instrumentId: 'eq-reliance',
+  direction: 'BUY',
+  orderType: 'MARKET',
+  quantity: 1,
+  strategyId: 'str-ema-pullback',
+});
+check('tagged order accepted', r.status === 200 && r.body?.data?.status === 'FILLED', JSON.stringify(r.body));
+check('response echoes strategyId', r.body?.data?.strategyId === 'str-ema-pullback', JSON.stringify(r.body?.data));
+const tagId = r.body?.data?.orderId;
+r = await get('/api/paper-orders');
+const tagOrder = (r.body?.data ?? []).find((o) => o.id === tagId);
+check('order history carries strategy_id', tagOrder && tagOrder.strategy_id === 'str-ema-pullback', JSON.stringify(tagOrder));
+check('order history carries strategy_name', tagOrder && tagOrder.strategy_name === 'EMA Trend Pullback', JSON.stringify(tagOrder));
+r = await post('/api/paper-order', {
+  instrumentId: 'eq-reliance',
+  direction: 'BUY',
+  orderType: 'MARKET',
+  quantity: 1,
+  strategyId: 'str-not-a-strategy',
+});
+check('unknown strategyId 404', r.status === 404 && r.body?.error?.code === 'NOT_FOUND', JSON.stringify(r.body));
+r = await get('/api/paper-strategy-performance');
+check('performance 200', r.status === 200, JSON.stringify(r.body).slice(0, 200));
+check('performance simulated meta', r.body?.meta?.simulated === true, JSON.stringify(r.body?.meta));
+const perfRow = (r.body?.data ?? []).find((x) => x.strategyId === 'str-ema-pullback');
+check('performance row exists', !!perfRow, JSON.stringify(r.body?.data).slice(0, 300));
+check('performance counts the order', perfRow && perfRow.orders >= 1, JSON.stringify(perfRow));
+check('performance counts filled order + opened trade', perfRow && perfRow.filled >= 1 && perfRow.trades >= 1, JSON.stringify(perfRow));
+check('performance resolves playbook name', perfRow && perfRow.name === 'EMA Trend Pullback', JSON.stringify(perfRow));
+
 srv.close();
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

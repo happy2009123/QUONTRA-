@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { Download, AlertTriangle } from 'lucide-react';
 import {
   Badge,
@@ -24,7 +24,6 @@ import { DEFAULT_COSTS } from '@/data/strategyData';
 import type { CostModel, TestPhase } from '@/models';
 
 const INSTRUMENTS = ['eq-reliance', 'eq-hdfcbank', 'intl-nvda'];
-const COMPARE_POOL = ['str-ema-ribbon', 'str-vwap-reversion', 'str-squeeze-breakout', 'str-rsi-divergence', 'str-mtf-alignment'];
 
 type TabId = 'performance' | 'comparison' | 'walkforward' | 'trades';
 
@@ -36,13 +35,27 @@ const PHASES: { value: TestPhase; label: string }[] = [
 
 export default function Backtesting() {
   const [tab, setTab] = useState<TabId>('performance');
-  const [strategyId, setStrategyId] = useState('str-ema-ribbon');
+  const [strategyId, setStrategyId] = useState('');
   const [phase, setPhase] = useState<TestPhase>('IN_SAMPLE');
   const [costs, setCosts] = useState<CostModel>({ ...DEFAULT_COSTS });
-  const [selected, setSelected] = useState<string[]>(['str-ema-ribbon', 'str-vwap-reversion']);
+  const [selected, setSelected] = useState<string[]>([]);
 
   const strategies = useAsync(() => api.strategy.listStrategies(), []);
-  const performance = useAsync(() => api.strategy.runBacktest(strategyId, INSTRUMENTS), [strategyId, phase]);
+
+  // Populate defaults from the loaded list — the mock-universe ids in the
+  // initial state do not exist in the backend seed.
+  useEffect(() => {
+    const list = strategies.data;
+    if (!list || list.length === 0) return;
+    setStrategyId((prev) => (prev && list.some((s) => s.id === prev) ? prev : list[0].id));
+    setSelected((prev) => (prev.length > 0 ? prev : list.slice(0, 2).map((s) => s.id)));
+  }, [strategies.data]);
+
+  const comparePool = useMemo(() => (strategies.data ?? []).slice(0, 5).map((s) => s.id), [strategies.data]);
+
+  const performance = useAsync(() => api.strategy.runBacktest(strategyId, INSTRUMENTS), [strategyId, phase], {
+    enabled: strategyId !== '',
+  });
   const comparison = useAsync(() => api.strategy.compare(selected), [selected.join(',')], { enabled: selected.length >= 2 });
 
   const roundTripBps = useMemo(
@@ -173,33 +186,39 @@ export default function Backtesting() {
 
       {tab === 'comparison' && (
         <div className="space-y-4">
-          <Card title="Select strategies to compare" subtitle="Choose between two and five strategies">
-            <div className="flex flex-wrap gap-2">
-              {COMPARE_POOL.map((id) => {
-                const active = selected.includes(id);
-                const label = (strategies.data ?? []).find((s) => s.id === id)?.name ?? id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() =>
-                      setSelected((prev) =>
-                        prev.includes(id) ? prev.filter((x) => x !== id) : prev.length >= 5 ? prev : [...prev, id],
-                      )
-                    }
-                    className={cn(
-                      'rounded-[4px] border px-2.5 py-1.5 text-[12px] transition-colors',
-                      active ? 'border-gold/45 bg-gold/10 text-gold-2' : 'border-line text-mut hover:text-fg',
-                    )}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="mt-2 text-[11.5px] text-mut-2">Select at least two strategies to render the comparison.</p>
-          </Card>
+          {strategies.loading ? (
+            <Card title="Select strategies to compare" subtitle="Choose between two and five strategies">
+              <Skeleton className="h-8 w-full" />
+            </Card>
+          ) : (
+            <Card title="Select strategies to compare" subtitle="Choose between two and five strategies">
+              <div className="flex flex-wrap gap-2">
+                {comparePool.map((id) => {
+                  const active = selected.includes(id);
+                  const label = (strategies.data ?? []).find((s) => s.id === id)?.name ?? id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() =>
+                        setSelected((prev) =>
+                          prev.includes(id) ? prev.filter((x) => x !== id) : prev.length >= 5 ? prev : [...prev, id],
+                        )
+                      }
+                      className={cn(
+                        'rounded-[4px] border px-2.5 py-1.5 text-[12px] transition-colors',
+                        active ? 'border-gold/45 bg-gold/10 text-gold-2' : 'border-line text-mut hover:text-fg',
+                      )}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[11.5px] text-mut-2">Select at least two strategies to render the comparison.</p>
+            </Card>
+          )}
 
           {selected.length < 2 ? (
             <Card><EmptyState title="Select at least two strategies" description="Comparison renders once two or more strategies are chosen." /></Card>

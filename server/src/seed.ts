@@ -269,6 +269,190 @@ const STRATEGIES: StrategySeed[] = [
       ['close', 'CROSSES_BELOW', 'sma_20', 1],
     ],
   },
+  {
+    id: 'str-golden-cross',
+    name: 'Golden Cross Trend Filter',
+    family: 'TREND',
+    description: 'Daily golden-cross regime: long only while the 50 SMA holds above the 200 SMA, entering on pullbacks with ADX confirmation.',
+    timeframe: '1D',
+    config: {
+      indicators: [
+        { id: 'SMA_50', label: 'SMA 50', enabled: true, params: { period: 50 } },
+        { id: 'SMA_200', label: 'SMA 200', enabled: true, params: { period: 200 } },
+        { id: 'ADX_14', label: 'ADX 14', enabled: true, params: { period: 14 } },
+        { id: 'ATR_14', label: 'ATR 14', enabled: true, params: { period: 14 } },
+      ],
+      stopLoss: { mode: 'ATR_MULTIPLE', value: 2 },
+      targets: { target1Pct: 3.0, target2Pct: 6.0 },
+      exitMode: 'SIGNAL_FLIP',
+    },
+    entry: [
+      ['sma_50', 'CROSSES_ABOVE', 'sma_200', 1],
+      ['close', 'GREATER_THAN', 'sma_200', 1],
+      ['adx', 'GREATER_THAN', '20', 1],
+    ],
+    exit: [
+      ['sma_50', 'CROSSES_BELOW', 'sma_200', 1],
+      ['close', 'LESS_THAN', 'sma_200', 1],
+    ],
+  },
+  {
+    id: 'str-scalp-vwap',
+    name: 'VWAP Pullback Scalp',
+    family: 'MEAN_REVERSION',
+    description: 'Scalping playbook: buys intraday pullbacks to VWAP while RSI is stretched low and price still holds above the fast EMA.',
+    timeframe: '5m',
+    config: {
+      indicators: [
+        { id: 'VWAP', label: 'VWAP', enabled: true, params: { period: 20 } },
+        { id: 'EMA_9', label: 'EMA 9', enabled: true, params: { period: 9 } },
+        { id: 'RSI_14', label: 'RSI 14', enabled: true, params: { period: 14 } },
+      ],
+      stopLoss: { mode: 'FIXED_PCT', value: 0.4 },
+      targets: { target1Pct: 0.4, target2Pct: 0.8 },
+      exitMode: 'TARGET_STOP',
+    },
+    entry: [
+      ['close', 'CROSSES_BELOW', 'vwap', 1],
+      ['rsi_14', 'LESS_THAN', '40', 1],
+      ['close', 'GREATER_THAN', 'ema_9', 1],
+    ],
+    exit: [
+      ['close', 'CROSSES_ABOVE', 'vwap', 1],
+      ['rsi_14', 'GREATER_THAN', '70', 1],
+    ],
+  },
+  {
+    id: 'str-crt-range',
+    name: 'Candle Range Theory Breakout',
+    family: 'BREAKOUT',
+    description: 'CRT playbook: compresses into the prior candle range, then trades the expansion break with volume and volatility confirmation.',
+    timeframe: '4h',
+    config: {
+      indicators: [
+        { id: 'ATR_14', label: 'ATR 14', enabled: true, params: { period: 14 } },
+        { id: 'BOLLINGER_20', label: 'Bollinger 20/2', enabled: true, params: { period: 20, mult: 2 } },
+        { id: 'VOLUME_20', label: 'Volume 20', enabled: true, params: { period: 20 } },
+      ],
+      stopLoss: { mode: 'ATR_MULTIPLE', value: 1.5 },
+      targets: { target1Pct: 2.0, target2Pct: 4.0 },
+      exitMode: 'TARGET_STOP',
+    },
+    entry: [
+      ['close', 'CROSSES_ABOVE', 'range_high', 1],
+      ['bb_width', 'LESS_THAN', '0.04', 3],
+      ['relative_volume', 'GREATER_THAN', '1.3', 1],
+    ],
+    exit: [
+      ['close', 'CROSSES_BELOW', 'range_mid', 1],
+      ['close', 'CROSSES_BELOW', 'bb_middle', 1],
+    ],
+  },
+  {
+    id: 'str-ict-order-block',
+    name: 'ICT Order Block Retest',
+    family: 'MEAN_REVERSION',
+    description: 'SMC playbook: buys the retest of a bullish order block that forms above the 50 EMA with expanding relative volume.',
+    timeframe: '15m',
+    config: {
+      indicators: [
+        { id: 'EMA_50', label: 'EMA 50', enabled: true, params: { period: 50 } },
+        { id: 'ATR_14', label: 'ATR 14', enabled: true, params: { period: 14 } },
+        { id: 'VOLUME_20', label: 'Volume 20', enabled: true, params: { period: 20 } },
+      ],
+      stopLoss: { mode: 'ATR_MULTIPLE', value: 1.5 },
+      targets: { target1Pct: 1.5, target2Pct: 3.0 },
+      exitMode: 'TARGET_STOP',
+    },
+    entry: [
+      ['close', 'WITHIN_RANGE', 'ob_low..ob_high', 1],
+      ['close', 'GREATER_THAN', 'ema_50', 1],
+      ['relative_volume', 'GREATER_THAN', '1.2', 1],
+    ],
+    exit: [
+      ['close', 'CROSSES_BELOW', 'ob_low', 1],
+      ['close', 'CROSSES_BELOW', 'ema_50', 1],
+    ],
+  },
+  {
+    id: 'str-ict-fvg',
+    name: 'Fair Value Gap Fill',
+    family: 'MEAN_REVERSION',
+    description: 'SMC playbook: enters inside a bullish fair value gap while the uptrend holds, targeting the gap fill with invalidation below the gap low.',
+    timeframe: '30m',
+    config: {
+      indicators: [
+        { id: 'EMA_20', label: 'EMA 20', enabled: true, params: { period: 20 } },
+        { id: 'EMA_50', label: 'EMA 50', enabled: true, params: { period: 50 } },
+        { id: 'ATR_14', label: 'ATR 14', enabled: true, params: { period: 14 } },
+      ],
+      stopLoss: { mode: 'FIXED_PCT', value: 0.8 },
+      targets: { target1Pct: 1.0, target2Pct: 2.0 },
+      exitMode: 'TARGET_STOP',
+    },
+    entry: [
+      ['close', 'WITHIN_RANGE', 'fvg_low..fvg_high', 1],
+      ['close', 'GREATER_THAN', 'ema_50', 1],
+      ['gap_fill_pct', 'LESS_THAN', '0.5', 1],
+    ],
+    exit: [
+      ['close', 'GREATER_THAN', 'fvg_high', 1],
+      ['close', 'CROSSES_BELOW', 'fvg_low', 1],
+    ],
+  },
+  {
+    id: 'str-bos-choch',
+    name: 'BOS / CHOCH Structure Break',
+    family: 'BREAKOUT',
+    description: 'SMC playbook: enters on a break of structure above the swing high when the 20 EMA leads the 50 EMA and ADX confirms trend strength.',
+    timeframe: '1h',
+    config: {
+      indicators: [
+        { id: 'EMA_20', label: 'EMA 20', enabled: true, params: { period: 20 } },
+        { id: 'EMA_50', label: 'EMA 50', enabled: true, params: { period: 50 } },
+        { id: 'ADX_14', label: 'ADX 14', enabled: true, params: { period: 14 } },
+        { id: 'ATR_14', label: 'ATR 14', enabled: true, params: { period: 14 } },
+      ],
+      stopLoss: { mode: 'ATR_MULTIPLE', value: 2 },
+      targets: { target1Pct: 2.0, target2Pct: 4.0 },
+      exitMode: 'TRAILING',
+    },
+    entry: [
+      ['close', 'CROSSES_ABOVE', 'swing_high', 1],
+      ['ema_20', 'CROSSES_ABOVE', 'ema_50', 1],
+      ['adx', 'GREATER_THAN', '20', 1],
+    ],
+    exit: [
+      ['close', 'CROSSES_BELOW', 'choch_level', 1],
+      ['adx', 'LESS_THAN', '20', 1],
+    ],
+  },
+  {
+    id: 'str-liquidity-sweep',
+    name: 'Liquidity Sweep Reversal',
+    family: 'BREAKOUT',
+    description: 'SMC playbook: fades a stop-run below the prior low when price recovers quickly and RSI exits oversold, targeting the swept liquidity high.',
+    timeframe: '1h',
+    config: {
+      indicators: [
+        { id: 'EMA_50', label: 'EMA 50', enabled: true, params: { period: 50 } },
+        { id: 'RSI_14', label: 'RSI 14', enabled: true, params: { period: 14 } },
+        { id: 'ATR_14', label: 'ATR 14', enabled: true, params: { period: 14 } },
+      ],
+      stopLoss: { mode: 'FIXED_PCT', value: 1.0 },
+      targets: { target1Pct: 1.5, target2Pct: 3.0 },
+      exitMode: 'TARGET_STOP',
+    },
+    entry: [
+      ['low', 'LESS_THAN', 'prior_low', 1],
+      ['close', 'GREATER_THAN', 'prior_low', 1],
+      ['rsi_14', 'LESS_THAN', '45', 1],
+    ],
+    exit: [
+      ['close', 'GREATER_THAN', 'prior_high', 1],
+      ['rsi_14', 'GREATER_THAN', '70', 1],
+    ],
+  },
 ];
 
 /** Seeds markets, instruments, sessions and strategies (idempotent). */

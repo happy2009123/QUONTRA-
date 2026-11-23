@@ -110,6 +110,15 @@ export default function StrategyLab() {
   const [dateError, setDateError] = useState<string | null>(null);
   const [runTick, setRunTick] = useState(0);
 
+  // The default id targets the mock universe — realign to the loaded list
+  // (backend seeds use a different id space) once strategies arrive.
+  useEffect(() => {
+    const list = strategies.data;
+    if (list && list.length > 0 && !list.some((s) => s.id === strategyId)) {
+      setStrategyId(list[0].id);
+    }
+  }, [strategies.data, strategyId]);
+
   const selectedStrategy = useMemo(
     () => strategies.data?.find((s) => s.id === strategyId) ?? null,
     [strategies.data, strategyId],

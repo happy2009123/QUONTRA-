@@ -198,12 +198,54 @@ test('GET /api/strategies exposes entry/exit conditions', async () => {
   const { status, json } = await get(started.base, '/api/strategies');
   assert.equal(status, 200);
   assertEnvelope(json);
-  assert.ok(json.data.length >= 5);
+  assert.ok(json.data.length >= 12, 'seed includes the original five plus the seven strategy-centre playbooks');
   for (const strategy of json.data) {
     assert.ok(strategy.id && strategy.name && strategy.family);
     assert.ok(Array.isArray(strategy.entryConditions) && strategy.entryConditions.length > 0);
     assert.ok(strategy.disclaimer.includes('not trade recommendations'));
   }
+});
+
+test('paper orders accept a playbook tag and report per-strategy performance', async () => {
+  // Resting BUY far below the quote — never fills, but carries the tag.
+  const placed = await post(started.base, '/api/paper-order', {
+    instrumentId: 'eq-reliance',
+    direction: 'BUY',
+    orderType: 'LIMIT',
+    quantity: 1,
+    price: 100,
+    strategyId: 'str-ema-pullback',
+  });
+  assert.equal(placed.status, 200);
+  assert.equal(placed.json.data.strategyId, 'str-ema-pullback');
+  assert.equal(placed.json.data.status, 'PENDING');
+
+  const orders = await get(started.base, '/api/paper-orders');
+  assert.equal(orders.status, 200);
+  const tagged = orders.json.data.find((o: any) => o.id === placed.json.data.orderId);
+  assert.ok(tagged, 'tagged order appears in history');
+  assert.equal(tagged.strategy_id, 'str-ema-pullback');
+  assert.equal(tagged.strategy_name, 'EMA Trend Pullback');
+
+  const unknown = await post(started.base, '/api/paper-order', {
+    instrumentId: 'eq-reliance',
+    direction: 'BUY',
+    orderType: 'MARKET',
+    quantity: 1,
+    strategyId: 'str-does-not-exist',
+  });
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.json.error.code, 'NOT_FOUND');
+
+  const perf = await get(started.base, '/api/paper-strategy-performance');
+  assert.equal(perf.status, 200);
+  assertEnvelope(perf.json);
+  assert.equal(perf.json.meta.simulated, true);
+  const row = perf.json.data.find((r: any) => r.strategyId === 'str-ema-pullback');
+  assert.ok(row, 'tagged strategy appears in performance rows');
+  assert.ok(row.orders >= 1, 'orders counted');
+  assert.equal(typeof row.name, 'string');
+  assert.ok(row.name.length > 0);
 });
 
 test('GET /api/backtests and /api/data-health return their documented shapes', async () => {

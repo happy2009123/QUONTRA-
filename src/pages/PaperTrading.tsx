@@ -45,6 +45,8 @@ interface PaperPosition {
 interface PaperOrder {
   id: string;
   instrument_id: string;
+  strategy_id: string | null;
+  strategy_name: string | null;
   direction: string;
   order_type: string;
   quantity: number;
@@ -62,8 +64,23 @@ interface StrategySummary {
   stopLoss: { mode: string; value: number };
   targets: { target1Pct: number; target2Pct: number };
   exitMode: string;
+  indicators: Array<{ id: string; label: string }>;
   entryConditions: unknown[];
+  exitConditions: unknown[];
   disclaimer: string;
+}
+
+interface StrategyPerformanceRow {
+  strategyId: string;
+  name: string;
+  family: string;
+  orders: number;
+  filled: number;
+  trades: number;
+  closed: number;
+  wins: number;
+  realisedPnl: number;
+  winRatePct: number | null;
 }
 
 interface Envelope<T> {
@@ -161,6 +178,7 @@ export default function PaperTrading() {
   const [positions, setPositions] = useState<PaperPosition[]>([]);
   const [orders, setOrders] = useState<PaperOrder[]>([]);
   const [strategies, setStrategies] = useState<StrategySummary[]>([]);
+  const [perf, setPerf] = useState<StrategyPerformanceRow[]>([]);
   const [quotes, setQuotes] = useState<Record<string, number>>({});
   const [fetchedAt, setFetchedAt] = useState('');
   const [loading, setLoading] = useState(true);
@@ -188,12 +206,13 @@ export default function PaperTrading() {
 
   const load = useCallback(async () => {
     try {
-      const [pfRes, posRes, ordRes, stRes, qRes] = await Promise.all([
+      const [pfRes, posRes, ordRes, stRes, qRes, perfRes] = await Promise.all([
         fetch('/api/paper-portfolio'),
         fetch('/api/paper-positions'),
         fetch('/api/paper-orders'),
         fetch('/api/strategies'),
         fetch(`/api/quotes?ids=${QUOTE_IDS}`),
+        fetch('/api/paper-strategy-performance'),
       ]);
       const pf = (await pfRes.json()) as Envelope<PaperPortfolio>;
       const pos = (await posRes.json()) as Envelope<PaperPosition[]>;
@@ -207,12 +226,18 @@ export default function PaperTrading() {
       setPositions(Array.isArray(pos.data) ? pos.data : []);
       setOrders(Array.isArray(ord.data) ? ord.data : []);
 
-      // Strategies and quotes enrich the desk but are not required to trade.
+      // Strategies, quotes and playbook performance enrich the desk but are not required to trade.
       try {
         const st = (await stRes.json()) as Envelope<StrategySummary[]>;
         setStrategies(Array.isArray(st.data) ? st.data : []);
       } catch {
         setStrategies([]);
+      }
+      try {
+        const pf2 = (await perfRes.json()) as Envelope<StrategyPerformanceRow[]>;
+        setPerf(Array.isArray(pf2.data) ? pf2.data : []);
+      } catch {
+        setPerf([]);
       }
       try {
         const q = (await qRes.json()) as Envelope<QuoteRow[]>;
@@ -281,6 +306,7 @@ export default function PaperTrading() {
           orderType,
           quantity: Number(quantity),
           price: needsPrice ? Number(price) : undefined,
+          strategyId: playbook?.id,
         }),
       });
       const payload = (await response.json()) as Envelope<{
@@ -297,9 +323,10 @@ export default function PaperTrading() {
         setPrefillNote(null);
         const priceLabel = order.price ? ` @ ${inr(order.price)}` : '';
         const restingNote = order.status === 'PENDING' ? ` (${order.orderType} resting)` : '';
+        const playbookNote = playbook ? ` · ${playbook.name}` : '';
         setFeedback({
           kind: 'success',
-          text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}${restingNote}.`,
+          text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}${restingNote}${playbookNote}.`,
         });
         setTimeout(() => setFeedback(null), 6000);
         await load();
@@ -325,6 +352,7 @@ export default function PaperTrading() {
           direction: 'SELL',
           orderType: 'MARKET',
           quantity: row.quantity,
+          strategyId: playbook?.id,
         }),
       });
       const payload = (await res.json()) as Envelope<unknown>;
@@ -578,6 +606,18 @@ export default function PaperTrading() {
       header: 'Type',
       cell: (row: PaperOrder) => <span className="text-mut">{row.order_type}</span>,
     },
+    {
+      key: 'playbook',
+      header: 'Playbook',
+      cell: (row: PaperOrder) =>
+        row.strategy_name ? (
+          <span className="block max-w-[150px] truncate text-mut" title={row.strategy_name}>
+            {row.strategy_name}
+          </span>
+        ) : (
+          <span className="text-mut-2">—</span>
+        ),
+    },
     { key: 'qty', header: 'Qty', align: 'right' as const, cell: (row: PaperOrder) => row.quantity },
     {
       key: 'price',
@@ -610,6 +650,38 @@ export default function PaperTrading() {
             </Button>
           </div>
         ) : null,
+    },
+  ];
+
+  const perfColumns = [
+    {
+      key: 'playbook',
+      header: 'Playbook',
+      cell: (row: StrategyPerformanceRow) => (
+        <div className="min-w-0">
+          <span className="block truncate text-fg">{row.name}</span>
+          <Badge tone={FAMILY_TONE[row.family] ?? 'neutral'}>{row.family || '—'}</Badge>
+        </div>
+      ),
+    },
+    { key: 'orders', header: 'Orders', align: 'right' as const, cell: (row: StrategyPerformanceRow) => row.orders },
+    { key: 'filled', header: 'Filled', align: 'right' as const, cell: (row: StrategyPerformanceRow) => row.filled },
+    { key: 'trades', header: 'Trades', align: 'right' as const, cell: (row: StrategyPerformanceRow) => row.trades },
+    { key: 'closed', header: 'Closed', align: 'right' as const, cell: (row: StrategyPerformanceRow) => row.closed },
+    {
+      key: 'winRate',
+      header: 'Win rate',
+      align: 'right' as const,
+      cell: (row: StrategyPerformanceRow) =>
+        row.winRatePct !== null ? <span className="num">{row.winRatePct}%</span> : <span className="text-mut-2">—</span>,
+    },
+    {
+      key: 'realised',
+      header: 'Realised P&L',
+      align: 'right' as const,
+      cell: (row: StrategyPerformanceRow) => (
+        <span className={`num ${row.realisedPnl >= 0 ? 'text-pos' : 'text-neg'}`}>{signedInr(row.realisedPnl)}</span>
+      ),
     },
   ];
 
@@ -741,12 +813,28 @@ export default function PaperTrading() {
                   emptyDescription="Orders you place appear here with fill status, modification and cancellation."
                 />
               </Card>
+              <Card
+                title="Performance by playbook"
+                subtitle="Attributed to the playbook active when each order was placed"
+                dense
+              >
+                <DataTable
+                  columns={perfColumns}
+                  rows={perf}
+                  rowKey={(row) => row.strategyId}
+                  caption="Per-playbook paper trading performance"
+                  loading={loading}
+                  dense
+                  emptyTitle="No playbook activity yet"
+                  emptyDescription="Select a playbook in Strategy Playbooks before placing an order to track its performance here."
+                />
+              </Card>
             </div>
           )}
 
           {tab === 'strategies' && (
             <div className="space-y-3">
-              <InfoHint text="Playbooks are seeded strategy definitions. Selecting one sets the active playbook used by AI Assist for stop-loss suggestions. Signals and backtests are simulated and are not trade recommendations." />
+              <InfoHint text="Playbooks are seeded strategy definitions. Selecting one sets the active playbook used by AI Assist and tags orders you place so their performance is attributed in the Portfolio tab. Signals and backtests are simulated and are not trade recommendations." />
               {strategies.length === 0 ? (
                 <Card>
                   <EmptyState
@@ -771,7 +859,24 @@ export default function PaperTrading() {
                             <Badge tone="muted">SL {stopLossLabel(s)}</Badge>
                             <Badge tone="muted">T1 {s.targets.target1Pct}%</Badge>
                             <Badge tone="muted">T2 {s.targets.target2Pct}%</Badge>
+                            {s.stopLoss.mode === 'FIXED_PCT' && s.stopLoss.value > 0 && (
+                              <Badge tone="gold">
+                                RR {Math.round((s.targets.target1Pct / s.stopLoss.value) * 10) / 10}:1
+                              </Badge>
+                            )}
                           </div>
+                          {s.indicators.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {s.indicators.map((ind) => (
+                                <span
+                                  key={ind.id}
+                                  className="rounded border border-line bg-panel px-1.5 py-0.5 text-[10.5px] text-mut-2"
+                                >
+                                  {ind.label}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                           <div className="space-y-1">
                             <span className="section-title">Entry</span>
                             <div className="flex flex-wrap gap-1.5">
@@ -788,6 +893,24 @@ export default function PaperTrading() {
                               )}
                             </div>
                           </div>
+                          {s.exitConditions.length > 0 && (
+                            <div className="space-y-1">
+                              <span className="section-title">Exit</span>
+                              <div className="flex flex-wrap gap-1.5">
+                                {s.exitConditions.slice(0, 3).map((c, i) => (
+                                  <span
+                                    key={i}
+                                    className="rounded border border-line bg-panel px-1.5 py-0.5 font-mono text-[10.5px] text-mut-2"
+                                  >
+                                    {condLabel(c)}
+                                  </span>
+                                ))}
+                                {s.exitConditions.length > 3 && (
+                                  <span className="text-[10.5px] text-mut-2">+{s.exitConditions.length - 3} more</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
                           <Button
                             variant={active ? 'primary' : 'secondary'}
                             size="sm"
