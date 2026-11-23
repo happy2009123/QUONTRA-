@@ -13,7 +13,7 @@ import StrategyBuilder from '@/pages/StrategyBuilder';
 import AutonomousAnalysis from '@/pages/AutonomousAnalysis';
 import StrategyComparisonPage from '@/pages/StrategyComparisonPage';
 import PersonalizedScannerPage from '@/pages/PersonalizedScannerPage';
-import AnalysisHistory from '@/pages/AnalysisHistory';
+import PaperTrading from '@/pages/PaperTrading';
 import Backtesting from '@/pages/Backtesting';
 import RiskCenter from '@/pages/RiskCenter';
 import DataCenter from '@/pages/DataCenter';

@@ -37,13 +37,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, shortLabel: 'Home' },
       { to: '/scanner', label: 'Market Scanner', icon: Radar, shortLabel: 'Scanner' },
       { to: '/charts', label: 'Charting Terminal', icon: LineChart, shortLabel: 'Charts' },
+      { to: '/paper-trading', label: 'Paper Trading', icon: CandlestickChart, shortLabel: 'Trading' },
     ],
-  },
-  {
-    to: '/paper-trading',
-    label: 'Paper Trading',
-    icon: CandlestickChart,
-    shortLabel: 'Trading',
   },
   {
     id: 'research',
