@@ -546,7 +546,6 @@ function OrderPlacementSection() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          userId: 'desk@quantora.demo',
           instrumentId,
           direction,
           orderType,
@@ -802,7 +801,6 @@ function PaperPortfolioSection() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: 'desk@quantora.demo',
           instrumentId: row.instrument_id,
           direction: 'SELL',
           orderType: 'MARKET',

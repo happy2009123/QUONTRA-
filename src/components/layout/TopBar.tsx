@@ -5,6 +5,7 @@ import { marketStatusFor } from '@/data/universe';
 import { formatClock, formatDate } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { useNotifications } from '@/state/NotificationsContext';
+import { useAuth } from '@/state/AuthContext';
 import { ConnectionStatusDot } from '@/components/ui/StatusIndicator';
 import { Dropdown, DropdownItem, DropdownLabel } from '@/components/ui/Dropdown';
 import { Logo } from './Logo';
@@ -28,6 +29,27 @@ export function TopBar() {
   const now = useClock();
   const navigate = useNavigate();
   const { unreadCount } = useNotifications();
+  const { user, logout } = useAuth();
+
+  const displayName = user?.displayName ?? user?.email.split('@')[0] ?? 'Account';
+  const initials =
+    displayName
+      .split(/[\s@.]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join('') || '—';
+
+  const signOut = () => {
+    void (async () => {
+      try {
+        await logout();
+        navigate('/login', { replace: true });
+      } catch {
+        /* server unreachable — stay signed in so the user can retry */
+      }
+    })();
+  };
 
   return (
     <header className="sticky top-0 z-30 h-14 border-b border-line bg-panel/95 backdrop-blur">
@@ -102,20 +124,20 @@ export function TopBar() {
               className="flex items-center gap-2 rounded-[4px] border border-line bg-card py-1 pl-1 pr-1.5 transition-colors hover:border-[#333c49]"
             >
               <span className="flex h-6 w-6 items-center justify-center rounded-[3px] bg-gold/15 text-[10.5px] font-bold text-gold-2">
-                RD
+                {initials}
               </span>
               <span className="hidden text-left leading-tight sm:block">
-                <span className="block text-[12px] font-medium text-fg">Research Desk</span>
-                <span className="block text-[9.5px] uppercase tracking-[0.08em] text-mut-2">Demo session</span>
+                <span className="block text-[12px] font-medium text-fg">{displayName}</span>
+                <span className="block text-[9.5px] uppercase tracking-[0.08em] text-mut-2">Paper account</span>
               </span>
               <ChevronDown size={13} className="text-mut" aria-hidden />
             </button>
           )}
         >
-          <DropdownLabel>Signed in (demo)</DropdownLabel>
+          <DropdownLabel>Signed in</DropdownLabel>
           <div className="border-b border-line px-2.5 pb-2 pt-1">
-            <p className="text-[12.5px] font-medium text-fg">Research Desk</p>
-            <p className="text-[11px] text-mut">desk@quantora.demo</p>
+            <p className="text-[12.5px] font-medium text-fg">{displayName}</p>
+            <p className="text-[11px] text-mut">{user?.email}</p>
           </div>
           <DropdownItem onClick={() => navigate('/settings')}>
             <SettingsIcon size={14} aria-hidden /> Settings
@@ -123,8 +145,8 @@ export function TopBar() {
           <DropdownItem onClick={() => navigate('/settings')}>
             <User size={14} aria-hidden /> Profile
           </DropdownItem>
-          <DropdownItem disabled>
-            <LogOut size={14} aria-hidden /> Sign out unavailable in demo
+          <DropdownItem onClick={signOut}>
+            <LogOut size={14} aria-hidden /> Sign out
           </DropdownItem>
         </Dropdown>
       </div>

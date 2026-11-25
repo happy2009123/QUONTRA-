@@ -300,7 +300,6 @@ export default function PaperTrading() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: 'desk@quantora.demo',
           instrumentId,
           direction,
           orderType,
@@ -347,7 +346,6 @@ export default function PaperTrading() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: 'desk@quantora.demo',
           instrumentId: row.instrument_id,
           direction: 'SELL',
           orderType: 'MARKET',

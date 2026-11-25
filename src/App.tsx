@@ -2,6 +2,9 @@ import { RouterProvider, createBrowserRouter } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import { SettingsProvider } from '@/state/SettingsContext';
 import { NotificationsProvider } from '@/state/NotificationsContext';
+import { AuthProvider } from '@/state/AuthContext';
+import { RequireAuth } from '@/state/RequireAuth';
+import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Scanner from '@/pages/Scanner';
 import ChartTerminal from '@/pages/ChartTerminal';
@@ -22,9 +25,14 @@ import Settings from '@/pages/Settings';
 import NotFound from '@/pages/NotFound';
 
 const router = createBrowserRouter([
+  { path: '/login', element: <Login /> },
   {
     path: '/',
-    element: <AppShell />,
+    element: (
+      <RequireAuth>
+        <AppShell />
+      </RequireAuth>
+    ),
     children: [
       { index: true, element: <Dashboard /> },
       { path: 'scanner', element: <Scanner /> },
@@ -52,7 +60,9 @@ export default function App() {
   return (
     <SettingsProvider>
       <NotificationsProvider>
-        <RouterProvider router={router} />
+        <AuthProvider>
+          <RouterProvider router={router} />
+        </AuthProvider>
       </NotificationsProvider>
     </SettingsProvider>
   );
