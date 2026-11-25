@@ -332,6 +332,15 @@ check(
   `status ${anonRes.status} ${JSON.stringify(anonBody).slice(0, 160)}`,
 );
 
+const ovAnon = await fetch(base + '/api/admin/overview');
+check('admin overview requires session', ovAnon.status === 401, `status ${ovAnon.status}`);
+const ov = await get('/api/admin/overview');
+check(
+  'admin overview 200 with full telemetry',
+  ov.status === 200 && ov.body?.data?.service?.name === 'quantora-backend' && Array.isArray(ov.body?.data?.routes),
+  JSON.stringify(ov.body).slice(0, 160),
+);
+
 const out = await post('/api/auth/logout', {});
 check('logout 200', out.status === 200, JSON.stringify(out.body));
 const cleared = out.headers.get('set-cookie') ?? '';

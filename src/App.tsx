@@ -22,6 +22,7 @@ import RiskCenter from '@/pages/RiskCenter';
 import DataCenter from '@/pages/DataCenter';
 import Notifications from '@/pages/Notifications';
 import Settings from '@/pages/Settings';
+import AdminConsole from '@/pages/AdminConsole';
 import NotFound from '@/pages/NotFound';
 
 const router = createBrowserRouter([
@@ -51,6 +52,7 @@ const router = createBrowserRouter([
       { path: 'data', element: <DataCenter /> },
       { path: 'notifications', element: <Notifications /> },
       { path: 'settings', element: <Settings /> },
+      { path: 'admin', element: <AdminConsole /> },
       { path: '*', element: <NotFound /> },
     ],
   },

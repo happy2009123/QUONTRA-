@@ -42,6 +42,7 @@ import {
   verifyPassword,
 } from '../auth/auth.ts';
 import { getUserById, insertUser, toPublicUser, updateLastLogin } from '../db/repoAuth.ts';
+import { getAdminOverview } from '../services/adminOverview.ts';
 import {
   getDataHealthApi,
   getCandlesApi,
@@ -178,6 +179,15 @@ export function buildRouter(deps: RouterDeps): Router {
     const user = getSessionUser(ctx, db, config);
     if (!user) throw new AppError('UNAUTHORIZED', 'No active session');
     return ok({ user });
+  });
+
+  // ── Admin console ──────────────────────────────────────────────────────
+  // Read-only operational telemetry for signed-in accounts. Secrets are
+  // reported as configured/unconfigured flags only — never their values.
+  // Mutating admin operations stay behind the bearer ADMIN_TOKEN.
+  router.get('/api/admin/overview', (ctx) => {
+    requireSession(ctx, db, config);
+    return ok(getAdminOverview({ db, registry, config, routes: router.patterns }));
   });
 
   // ── Markets ────────────────────────────────────────────────────────────

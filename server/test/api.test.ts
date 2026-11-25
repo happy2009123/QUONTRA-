@@ -359,6 +359,28 @@ test('paper endpoints require an authenticated session', async () => {
   assert.equal(authenticated.status, 200, 'signed-in requests still pass');
 });
 
+test('admin overview is session-gated and never leaks secrets', async () => {
+  const anon = await get(started.base, '/api/admin/overview', { Cookie: '' });
+  assert.equal(anon.status, 401);
+  assert.equal(anon.json.error.code, 'UNAUTHORIZED');
+
+  const res = await get(started.base, '/api/admin/overview');
+  assert.equal(res.status, 200);
+  assertEnvelope(res.json);
+  const data = res.json.data;
+  assert.equal(data.service.name, 'quantora-backend');
+  assert.ok(data.schema.version >= 2, 'schema version reported');
+  assert.ok(Array.isArray(data.routes) && data.routes.length > 30, 'routes listed');
+  assert.ok(data.database.counts.instruments > 0, 'database counts reported');
+  assert.ok(Array.isArray(data.providers), 'provider health reported');
+  assert.ok(Array.isArray(data.users) && data.users.some((u: any) => u.email === 'desk@quantora.demo'), 'registered users listed');
+  assert.ok(['SET', 'DEV_DEFAULT'].includes(data.security.sessionSecret), 'secret state is a flag');
+  const raw = JSON.stringify(data);
+  assert.ok(!raw.includes('quantora-dev-insecure-session-secret'), 'session secret value must not be exposed');
+  assert.ok(!raw.includes('test-admin-token'), 'admin token must not be exposed');
+  assert.ok(!raw.includes('password_hash'), 'password hashes must not be exposed');
+});
+
 test('repeated login failures are throttled', async () => {
   const email = 'throttle@example.com';
   let last = 0;

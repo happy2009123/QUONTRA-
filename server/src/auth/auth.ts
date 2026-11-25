@@ -16,7 +16,7 @@ import { AppError } from '../lib/errors.ts';
 import { getUserById, toPublicUser, type PublicUser } from '../db/repoAuth.ts';
 
 export const SESSION_COOKIE = 'quantora_session';
-const SESSION_TTL_SEC = 60 * 60 * 24 * 30; // 30 days
+export const SESSION_TTL_SEC = 60 * 60 * 24 * 30; // 30 days
 const SCRYPT_N = 16_384;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;

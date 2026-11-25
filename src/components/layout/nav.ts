@@ -4,6 +4,7 @@ import {
   Bell,
   Beaker,
   CandlestickChart,
+  Cpu,
   Database,
   FlaskConical,
   LayoutDashboard,
@@ -64,6 +65,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/data', label: 'Data Center', icon: Database },
       { to: '/notifications', label: 'Notifications', icon: Bell },
       { to: '/settings', label: 'Settings', icon: Settings },
+      { to: '/admin', label: 'Admin', icon: Cpu },
     ],
   },
 ];
