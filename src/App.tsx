@@ -1,13 +1,12 @@
-import { RouterProvider, createBrowserRouter } from 'react-router-dom';
+import { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/state/AuthContext';
 import { AppShell } from '@/components/layout/AppShell';
 import { SettingsProvider } from '@/state/SettingsContext';
 import { NotificationsProvider } from '@/state/NotificationsContext';
-import { AuthProvider } from '@/state/AuthContext';
 import { ToastProvider } from '@/state/ToastContext';
 import { CommandPaletteProvider } from '@/state/CommandPaletteContext';
 import { WatchlistProvider } from '@/state/WatchlistContext';
-import { RequireAuth } from '@/state/RequireAuth';
-import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Scanner from '@/pages/Scanner';
 import ChartTerminal from '@/pages/ChartTerminal';
@@ -28,53 +27,37 @@ import Settings from '@/pages/Settings';
 import AdminConsole from '@/pages/AdminConsole';
 import NotFound from '@/pages/NotFound';
 
-const router = createBrowserRouter([
-  { path: '/login', element: <Login /> },
-  {
-    path: '/',
-    element: (
-      <RequireAuth>
-        <AppShell />
-      </RequireAuth>
-    ),
-    children: [
-      { index: true, element: <Dashboard /> },
-      { path: 'scanner', element: <Scanner /> },
-      { path: 'charts', element: <ChartTerminal /> },
-      { path: 'intelligence', element: <Intelligence /> },
-      { path: 'reports', element: <Reports /> },
-      { path: 'strategy-lab', element: <StrategyLab /> },
-      { path: 'strategy-centre', element: <StrategyCentre /> },
-      { path: 'strategy-builder', element: <StrategyBuilder /> },
-      { path: 'autonomous-analysis', element: <AutonomousAnalysis /> },
-      { path: 'strategy-comparison', element: <StrategyComparisonPage /> },
-      { path: 'personalized-scanner', element: <PersonalizedScannerPage /> },
-      { path: 'paper-trading', element: <PaperTrading /> },
-      { path: 'backtesting', element: <Backtesting /> },
-      { path: 'risk', element: <RiskCenter /> },
-      { path: 'data', element: <DataCenter /> },
-      { path: 'notifications', element: <Notifications /> },
-      { path: 'settings', element: <Settings /> },
-      { path: 'admin', element: <AdminConsole /> },
-      { path: '*', element: <NotFound /> },
-    ],
-  },
-]);
+function App() {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
 
-export default function App() {
+  useEffect(() => {
+    // If loading, wait; otherwise, allow access regardless of auth status
+    // by not redirecting to login
+  }, []);
+
   return (
     <SettingsProvider>
       <NotificationsProvider>
-        <AuthProvider>
-          <ToastProvider>
-            <WatchlistProvider>
-              <CommandPaletteProvider>
-                <RouterProvider router={router} />
-              </CommandPaletteProvider>
-            </WatchlistProvider>
-          </ToastProvider>
-        </AuthProvider>
+        <ToastProvider>
+          <WatchlistProvider>
+            <CommandPaletteProvider>
+              <nav>
+                <ul>
+                  <li><a href="/">Dashboard</a></li>
+                  <li><a href="/scanner">Scanner</a></li>
+                  <li><a href="/charts">Charts</a></li>
+                  <li><a href="/settings">Settings</a></li>
+                  <li><a href="/admin">Admin</a></li>
+                </ul>
+              </nav>
+              <AppShell />
+            </CommandPaletteProvider>
+          </WatchlistProvider>
+        </ToastProvider>
       </NotificationsProvider>
     </SettingsProvider>
   );
 }
+
+export default App;

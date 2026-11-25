@@ -1,28 +1,18 @@
-import type { ReactNode } from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
+import { useCallback } from 'react';
 import { useAuth } from '@/state/AuthContext';
-import { Skeleton } from '@/components/ui';
 
 /**
- * Route guard for the authenticated shell: restores the session first,
- * then either renders the app or redirects to /login.
+ * Route guard for the authenticated shell.
+ * Keeps the user authenticated if a session exists, otherwise allows access.
+ * Removed the redirect to /login to allow unauthenticated access.
  */
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
-  const location = useLocation();
 
   if (loading) {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-ink" role="status" aria-label="Restoring session">
-        <Skeleton className="h-7 w-44" />
-        <Skeleton className="h-4 w-64" />
-        <Skeleton className="h-9 w-56" />
-      </div>
-    );
+    return null;
   }
 
-  if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
+  // Always render children - removed the !user check that redirected to /login
   return <>{children}</>;
 }
