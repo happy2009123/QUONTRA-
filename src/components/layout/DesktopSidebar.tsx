@@ -25,7 +25,9 @@ export function DesktopSidebar() {
                     end={item.to === '/'}
                     className={({ isActive }) =>
                       cn(
-                        'group flex items-center gap-2.5 rounded-[4px] px-2 py-[7px] text-[12.5px] transition-colors',
+                        'group flex items-center gap-2.5 rounded-[4px] px-2 py-[7px] text-[12.5px]',
+                        'transition-[background-color,color,scale] duration-150 ease-out',
+                        'motion-safe:active:scale-[0.98]',
                         isActive
                           ? 'bg-gold/10 font-medium text-gold-2'
                           : 'text-mut hover:bg-[#1a2029] hover:text-fg',

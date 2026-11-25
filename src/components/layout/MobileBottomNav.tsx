@@ -27,7 +27,8 @@ export function MobileBottomNav() {
                 end={item.to === '/'}
                 className={({ isActive }) =>
                   cn(
-                    'flex h-full flex-col items-center justify-center gap-1 text-[9.5px] font-medium transition-colors',
+                    'flex h-full flex-col items-center justify-center gap-1 text-[9.5px] font-medium',
+                    'transition-[color,scale] duration-150 ease-out motion-safe:active:scale-95',
                     isActive ? 'text-gold-2' : 'text-mut',
                   )
                 }
@@ -48,7 +49,8 @@ export function MobileBottomNav() {
               aria-expanded={open}
               aria-label="More navigation"
               className={cn(
-                'flex h-full w-full flex-col items-center justify-center gap-1 text-[9.5px] font-medium transition-colors',
+                'flex h-full w-full flex-col items-center justify-center gap-1 text-[9.5px] font-medium',
+                'transition-[color,scale] duration-150 ease-out motion-safe:active:scale-95',
                 moreActive ? 'text-gold-2' : 'text-mut',
               )}
             >
@@ -61,15 +63,15 @@ export function MobileBottomNav() {
 
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="All sections">
-          <div className="absolute inset-0 bg-black/65" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute inset-x-0 bottom-0 max-h-[80vh] overflow-y-auto rounded-t-lg border-t border-line bg-card pb-6">
+          <div className="fade-in absolute inset-0 bg-black/65" onClick={() => setOpen(false)} aria-hidden />
+          <div className="sheet-in absolute inset-x-0 bottom-0 max-h-[80vh] overflow-y-auto rounded-t-lg border-t border-line bg-card pb-6">
             <div className="sticky top-0 flex items-center justify-between border-b border-line bg-card px-4 py-3">
               <Logo size="sm" />
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close menu"
-                className="rounded p-1.5 text-mut hover:bg-panel hover:text-fg"
+                className="rounded p-1.5 text-mut transition-[background-color,color,scale] duration-150 ease-out hover:bg-panel hover:text-fg motion-safe:active:scale-95"
               >
                 <X size={17} aria-hidden />
               </button>
@@ -89,7 +91,9 @@ export function MobileBottomNav() {
                           onClick={() => setOpen(false)}
                           className={({ isActive }) =>
                             cn(
-                              'flex items-center gap-3 rounded-[4px] px-2.5 py-2.5 text-[13.5px] transition-colors',
+                              'flex items-center gap-3 rounded-[4px] px-2.5 py-2.5 text-[13.5px]',
+                              'transition-[background-color,color,scale] duration-150 ease-out',
+                              'motion-safe:active:scale-[0.98]',
                               isActive ? 'bg-gold/10 font-medium text-gold-2' : 'text-mut hover:bg-panel hover:text-fg',
                             )
                           }

@@ -40,7 +40,7 @@ export function Modal({ open, onClose, title, description, children, footer, siz
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto p-0 sm:items-center sm:p-4">
-      <div className="fixed inset-0 bg-black/65 backdrop-blur-[2px]" onClick={onClose} aria-hidden />
+      <div className="fade-in fixed inset-0 bg-black/65 backdrop-blur-[2px]" onClick={onClose} aria-hidden />
       <div
         ref={panelRef}
         role="dialog"
@@ -49,6 +49,7 @@ export function Modal({ open, onClose, title, description, children, footer, siz
         tabIndex={-1}
         className={cn(
           'relative w-full rounded-t-lg border border-line bg-card shadow-2xl outline-none sm:rounded-lg',
+          'sheet-in',
           width,
         )}
       >
@@ -63,7 +64,7 @@ export function Modal({ open, onClose, title, description, children, footer, siz
               type="button"
               onClick={onClose}
               aria-label="Close dialog"
-              className="rounded p-1 text-mut transition-colors hover:bg-panel hover:text-fg"
+              className="rounded p-1 text-mut transition-[background-color,color,scale] duration-150 ease-out hover:bg-panel hover:text-fg motion-safe:active:scale-95"
             >
               <X size={16} aria-hidden />
             </button>

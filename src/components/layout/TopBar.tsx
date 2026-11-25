@@ -104,7 +104,7 @@ export function TopBar() {
         <Link
           to="/notifications"
           aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
-          className="relative rounded-[4px] border border-line bg-card p-1.5 text-mut transition-colors hover:text-fg"
+          className="relative rounded-[4px] border border-line bg-card p-1.5 text-mut transition-[background-color,border-color,color,scale] duration-150 ease-out hover:text-fg motion-safe:active:scale-95"
         >
           <Bell size={15} aria-hidden />
           {unreadCount > 0 && (
@@ -121,7 +121,7 @@ export function TopBar() {
             <button
               type="button"
               {...props}
-              className="flex items-center gap-2 rounded-[4px] border border-line bg-card py-1 pl-1 pr-1.5 transition-colors hover:border-[#333c49]"
+              className="flex items-center gap-2 rounded-[4px] border border-line bg-card py-1 pl-1 pr-1.5 transition-[background-color,border-color,scale] duration-150 ease-out hover:border-[#333c49] motion-safe:active:scale-[0.97]"
             >
               <span className="flex h-6 w-6 items-center justify-center rounded-[3px] bg-gold/15 text-[10.5px] font-bold text-gold-2">
                 {initials}

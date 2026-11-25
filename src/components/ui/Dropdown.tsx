@@ -39,7 +39,7 @@ export function Dropdown({ trigger, children, align = 'end', label, className }:
           role="menu"
           aria-label={label}
           className={cn(
-            'absolute z-40 mt-2 min-w-[220px] rounded-[5px] border border-line bg-card p-1 shadow-2xl',
+            'pop-in absolute z-40 mt-2 min-w-[220px] rounded-[5px] border border-line bg-card p-1 shadow-2xl',
             align === 'end' ? 'right-0' : 'left-0',
           )}
           onClick={() => setOpen(false)}
@@ -69,7 +69,9 @@ export function DropdownItem({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'flex w-full items-center gap-2 rounded-[3px] px-2.5 py-1.5 text-left text-[12.5px] transition-colors',
+        'flex w-full items-center gap-2 rounded-[3px] px-2.5 py-1.5 text-left text-[12.5px]',
+        'transition-[background-color,color,scale] duration-150 ease-out',
+        'motion-safe:active:scale-[0.98]',
         'disabled:opacity-45 disabled:pointer-events-none',
         danger ? 'text-neg hover:bg-neg/10' : 'text-mut hover:bg-panel hover:text-fg',
       )}

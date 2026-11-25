@@ -31,7 +31,9 @@ export function Tabs<T extends string>({ items, value, onChange, label, size = '
             disabled={item.disabled}
             onClick={() => onChange(item.value)}
             className={cn(
-              'relative shrink-0 rounded-[4px] border font-medium transition-colors',
+              'relative shrink-0 rounded-[4px] border font-medium',
+              'transition-[background-color,border-color,color,scale] duration-150 ease-out',
+              'motion-safe:active:scale-[0.97]',
               'focus-visible:outline-2 focus-visible:outline-gold/70 focus-visible:outline-offset-1',
               'disabled:opacity-40 disabled:pointer-events-none',
               size === 'sm' ? 'h-7 px-2.5 text-[12px]' : 'h-8 px-3 text-[12.5px]',
@@ -77,7 +79,9 @@ export function SegmentedControl<T extends string>({ options, value, onChange, l
             aria-pressed={active}
             onClick={() => onChange(o.value)}
             className={cn(
-              'shrink-0 rounded-[3px] font-medium transition-colors',
+              'shrink-0 rounded-[3px] font-medium',
+              'transition-[background-color,color,scale] duration-150 ease-out',
+              'motion-safe:active:scale-95',
               'focus-visible:outline-2 focus-visible:outline-gold/70',
               size === 'xs' ? 'h-5.5 px-2 text-[11px]' : 'h-6.5 px-2.5 text-[12px]',
               active ? 'bg-gold/15 text-gold-2' : 'text-mut hover:text-fg',

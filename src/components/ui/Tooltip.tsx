@@ -25,7 +25,7 @@ export function Tooltip({ content, children, side = 'top', className }: TooltipP
         <span
           role="tooltip"
           className={cn(
-            'pointer-events-none absolute left-1/2 z-40 w-max max-w-[260px] -translate-x-1/2 rounded-[4px]',
+            'pop-in-x pointer-events-none absolute left-1/2 z-40 w-max max-w-[260px] -translate-x-1/2 rounded-[4px]',
             'border border-line bg-[#0c1016] px-2 py-1.5 text-[11px] leading-snug text-fg shadow-xl',
             side === 'top' ? 'bottom-[calc(100%+6px)]' : 'top-[calc(100%+6px)]',
           )}
@@ -43,7 +43,7 @@ export function InfoHint({ text }: { text: string }) {
       <button
         type="button"
         aria-label="More information"
-        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-line text-[9px] font-bold text-mut hover:text-fg"
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-line text-[9px] font-bold text-mut transition-[color,scale] duration-150 ease-out hover:text-fg motion-safe:active:scale-90"
       >
         ?
       </button>

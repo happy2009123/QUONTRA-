@@ -15,11 +15,12 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    'bg-gold text-[#141005] hover:bg-gold-2 active:bg-gold-2 border border-gold/70 font-semibold',
+    'bg-gold text-[#141005] hover:bg-gold-2 active:bg-gold-2 border border-gold/70 font-semibold hover:shadow-[0_4px_16px_-6px_rgba(198,161,91,0.55)] active:shadow-none',
   secondary:
     'bg-card text-fg hover:bg-[#1b212b] border border-line hover:border-[#333c49]',
   ghost: 'bg-transparent text-mut hover:text-fg hover:bg-[#1a202a] border border-transparent',
-  danger: 'bg-neg/12 text-neg hover:bg-neg/20 border border-neg/40',
+  danger:
+    'bg-neg/12 text-neg hover:bg-neg/20 border border-neg/40 hover:shadow-[0_4px_16px_-6px_rgba(224,82,82,0.4)] active:shadow-none',
   subtle: 'bg-panel text-mut hover:text-fg border border-line',
 };
 
@@ -47,7 +48,10 @@ export function Button({
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       className={cn(
-        'inline-flex items-center justify-center rounded-[4px] font-medium transition-colors',
+        'group inline-flex items-center justify-center rounded-[4px] font-medium',
+        'transition-[background-color,border-color,color,box-shadow,translate,scale] duration-150 ease-out',
+        'motion-safe:hover:-translate-y-px',
+        'motion-safe:active:translate-y-0 motion-safe:active:scale-[0.97]',
         'disabled:opacity-45 disabled:pointer-events-none',
         'focus-visible:outline-2 focus-visible:outline-gold/70 focus-visible:outline-offset-1',
         VARIANTS[variant],
@@ -57,7 +61,16 @@ export function Button({
       )}
       {...rest}
     >
-      {loading ? <Loader2 size={14} className="animate-spin" aria-hidden /> : icon}
+      {loading ? (
+        <Loader2 size={14} className="animate-spin" aria-hidden />
+      ) : icon ? (
+        <span
+          className="inline-flex transition-transform duration-150 ease-out motion-safe:group-hover:translate-x-px"
+          aria-hidden
+        >
+          {icon}
+        </span>
+      ) : null}
       {children}
     </button>
   );
