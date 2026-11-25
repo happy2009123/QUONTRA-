@@ -23,6 +23,7 @@ import { Sparkline } from '@/components/charts/Sparkline';
 import { DashboardQuotes } from '@/components/DashboardQuotes';
 import { DashboardSideRail } from '@/components/DashboardSideRail';
 import { WatchlistCard } from '@/components/WatchlistCard';
+import { PriceTicker } from '@/components/PriceTicker';
 import { api } from '@/api/client';
 import { useAsync } from '@/state/useAsync';
 import { useToasts } from '@/state/ToastContext';
@@ -86,6 +87,8 @@ export default function Dashboard() {
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
         <div className="flex min-w-0 flex-col gap-4">
           <DashboardQuotes />
+
+          <PriceTicker />
 
           <WatchlistCard />
 
