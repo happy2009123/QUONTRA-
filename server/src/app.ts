@@ -1,6 +1,6 @@
 /** Application composition root: config → database → providers → HTTP. */
 
-import { loadConfig, type AppConfig } from './config/env.ts';
+import { loadConfig, DEV_SESSION_SECRET, type AppConfig } from './config/env.ts';
 import { openDatabase, type Db } from './db/db.ts';
 import { seedReferenceData } from './seed.ts';
 import { ProviderRegistry } from './providers/registry.ts';
@@ -38,6 +38,9 @@ export interface QuantoraApp {
 export async function createApp(options: CreateAppOptions = {}): Promise<QuantoraApp> {
   const config = options.config ?? loadConfig();
   setLogLevel(config.logLevel);
+  if (config.env === 'production' && config.sessionSecret === DEV_SESSION_SECRET) {
+    log.warn('SESSION_SECRET is not set — falling back to the insecure development secret');
+  }
 
   const db = options.db ?? openDatabase({ path: config.dbPath });
   if (options.seed !== false) seedReferenceData(db);

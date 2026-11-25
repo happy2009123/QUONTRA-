@@ -5,6 +5,9 @@
 
 export type EnvName = 'development' | 'production' | 'test';
 
+/** Insecure development-only signing key — production must set SESSION_SECRET. */
+export const DEV_SESSION_SECRET = 'quantora-dev-insecure-session-secret';
+
 export interface ProviderHttpConfig {
   enabled: boolean;
   baseUrl: string;
@@ -21,6 +24,8 @@ export interface AppConfig {
   port: number;
   dbPath: string;
   adminToken?: string;
+  /** HMAC key for signing session cookies (SESSION_SECRET). */
+  sessionSecret: string;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   corsOrigins: string[];
   rateLimit: { windowMs: number; max: number };
@@ -112,6 +117,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: int(env, 'PORT', 8080, 1, 65_535),
     dbPath: str(env, 'QUANTORA_DB', envName === 'test' ? ':memory:' : 'data/quantora.db'),
     adminToken: env.ADMIN_TOKEN || undefined,
+    sessionSecret: str(env, 'SESSION_SECRET', DEV_SESSION_SECRET),
     logLevel: oneOf(env, 'LOG_LEVEL', ['debug', 'info', 'warn', 'error'] as const, 'info'),
     corsOrigins,
     rateLimit: {

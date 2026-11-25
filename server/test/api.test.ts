@@ -30,8 +30,26 @@ async function startApp(env: Record<string, string> = {}): Promise<Started> {
   return { app, base: `http://127.0.0.1:${port}` };
 }
 
-async function get(base: string, path: string): Promise<{ status: number; json: any; headers: Headers }> {
-  const res = await fetch(base + path);
+/** Session cookie captured during boot; attached unless a caller overrides it. */
+let sessionCookie: string | null = null;
+
+function cookieFrom(headers: Headers): string | null {
+  const raw = headers.get('set-cookie');
+  if (!raw) return null;
+  return raw.split(';')[0] ?? null;
+}
+
+function withSession(headers: Record<string, string>): Record<string, string> {
+  if (sessionCookie === null || 'Cookie' in headers) return headers;
+  return { ...headers, Cookie: sessionCookie };
+}
+
+async function get(
+  base: string,
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; json: any; headers: Headers }> {
+  const res = await fetch(base + path, { headers: withSession(headers) });
   return { status: res.status, json: await res.json(), headers: res.headers };
 }
 
@@ -43,7 +61,7 @@ async function post(
 ): Promise<{ status: number; json: any; headers: Headers }> {
   const res = await fetch(base + path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', ...withSession(headers) },
     body: JSON.stringify(body),
   });
   return { status: res.status, json: await res.json(), headers: res.headers };
@@ -60,6 +78,14 @@ let started: Started;
 
 before(async () => {
   started = await startApp();
+  const registered = await post(started.base, '/api/auth/register', {
+    email: 'desk@quantora.demo',
+    password: 'desk-password-1',
+    displayName: 'Research Desk',
+  }, { Cookie: '' });
+  assert.equal(registered.status, 201, 'boot user registration must succeed');
+  sessionCookie = cookieFrom(registered.headers);
+  assert.ok(sessionCookie?.startsWith('quantora_session='), 'register must set the session cookie');
 });
 
 after(async () => {
@@ -246,6 +272,110 @@ test('paper orders accept a playbook tag and report per-strategy performance', a
   assert.ok(row.orders >= 1, 'orders counted');
   assert.equal(typeof row.name, 'string');
   assert.ok(row.name.length > 0);
+});
+
+test('auth: register, session, login and logout lifecycle', async () => {
+  const email = 'alice@example.com';
+  const password = 'correct-horse-1';
+
+  const anon = await get(started.base, '/api/auth/session', { Cookie: '' });
+  assert.equal(anon.status, 401);
+  assert.equal(anon.json.error.code, 'UNAUTHORIZED');
+
+  const registered = await post(
+    started.base,
+    '/api/auth/register',
+    { email, password, displayName: 'Alice' },
+    { Cookie: '' },
+  );
+  assert.equal(registered.status, 201);
+  assert.equal(registered.json.data.email, email);
+  assert.equal(registered.json.data.displayName, 'Alice');
+  const aliceCookie = cookieFrom(registered.headers);
+  assert.ok(aliceCookie?.startsWith('quantora_session='), 'register sets the session cookie');
+  assert.ok((registered.headers.get('set-cookie') ?? '').includes('HttpOnly'), 'session cookie is httpOnly');
+
+  const dup = await post(started.base, '/api/auth/register', { email, password }, { Cookie: '' });
+  assert.equal(dup.status, 409);
+  assert.equal(dup.json.error.code, 'CONFLICT');
+
+  const shortPassword = await post(
+    started.base,
+    '/api/auth/register',
+    { email: 'bob@example.com', password: 'short' },
+    { Cookie: '' },
+  );
+  assert.equal(shortPassword.status, 400);
+  assert.equal(shortPassword.json.error.code, 'VALIDATION_ERROR');
+
+  const badLogin = await post(
+    started.base,
+    '/api/auth/login',
+    { email, password: 'wrong-password-1' },
+    { Cookie: '' },
+  );
+  assert.equal(badLogin.status, 401);
+  assert.equal(badLogin.json.error.code, 'UNAUTHORIZED');
+
+  const login = await post(started.base, '/api/auth/login', { email, password }, { Cookie: '' });
+  assert.equal(login.status, 200);
+  const loginCookie = cookieFrom(login.headers);
+  assert.ok(loginCookie);
+
+  const session = await get(started.base, '/api/auth/session', { Cookie: loginCookie });
+  assert.equal(session.status, 200);
+  assert.equal(session.json.data.user.email, email);
+
+  const registerSession = await get(started.base, '/api/auth/session', { Cookie: aliceCookie ?? '' });
+  assert.equal(registerSession.status, 200, 'register cookie is a valid session');
+
+  const logout = await post(started.base, '/api/auth/logout', {}, { Cookie: loginCookie });
+  assert.equal(logout.status, 200);
+  const cleared = logout.headers.get('set-cookie') ?? '';
+  assert.ok(cleared.includes('Max-Age=0'), 'logout expires the cookie');
+  const clearedCookie = cleared.split(';')[0] ?? '';
+  const afterLogout = await get(started.base, '/api/auth/session', { Cookie: clearedCookie });
+  assert.equal(afterLogout.status, 401, 'cleared cookie no longer carries a session');
+});
+
+test('paper endpoints require an authenticated session', async () => {
+  const portfolio = await get(started.base, '/api/paper-portfolio', { Cookie: '' });
+  assert.equal(portfolio.status, 401);
+  assert.equal(portfolio.json.error.code, 'UNAUTHORIZED');
+
+  const orders = await get(started.base, '/api/paper-orders', { Cookie: '' });
+  assert.equal(orders.status, 401);
+
+  const placed = await post(
+    started.base,
+    '/api/paper-order',
+    { instrumentId: 'eq-reliance', direction: 'BUY', orderType: 'MARKET', quantity: 1 },
+    { Cookie: '' },
+  );
+  assert.equal(placed.status, 401);
+  assert.equal(placed.json.error.code, 'UNAUTHORIZED');
+
+  const authenticated = await get(started.base, '/api/paper-portfolio');
+  assert.equal(authenticated.status, 200, 'signed-in requests still pass');
+});
+
+test('repeated login failures are throttled', async () => {
+  const email = 'throttle@example.com';
+  let last = 0;
+  for (let attempt = 0; attempt < 11; attempt += 1) {
+    const res = await post(
+      started.base,
+      '/api/auth/login',
+      { email, password: 'no-such-password' },
+      { Cookie: '' },
+    );
+    last = res.status;
+    if (attempt < 10) {
+      assert.notEqual(res.status, 429, `attempt ${attempt + 1} must not be throttled yet`);
+    }
+  }
+  assert.equal(last, 429, '11th consecutive failure is rate limited');
+  assert.equal((await post(started.base, '/api/auth/login', { email, password: 'no-such-password' }, { Cookie: '' })).status, 429);
 });
 
 test('GET /api/backtests and /api/data-health return their documented shapes', async () => {

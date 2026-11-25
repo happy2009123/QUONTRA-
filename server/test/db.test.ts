@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { migrateSchema, openDatabase, schemaVersion } from '../src/db/db.ts';
+import { SCHEMA_VERSION } from '../src/db/schema.ts';
 import { seedReferenceData } from '../src/seed.ts';
 import { insertCandles, getCandles, type CandleWrite } from '../src/db/repoSeries.ts';
 import { withTx } from '../src/db/tx.ts';
@@ -34,17 +35,17 @@ function candle(ts: number, overrides: Partial<CandleWrite> = {}): CandleWrite {
 test('migrations are idempotent and record a version', () => {
   const db = freshDb();
   // openDatabase migrates on connect, so the version is already stamped.
-  assert.equal(schemaVersion(db), 1);
+  assert.equal(schemaVersion(db), SCHEMA_VERSION);
   migrateSchema(db);
-  assert.equal(schemaVersion(db), 1);
+  assert.equal(schemaVersion(db), SCHEMA_VERSION);
   migrateSchema(db); // second run must not throw
-  assert.equal(schemaVersion(db), 1);
+  assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all() as Array<{ name: string }>;
   const names = tables.map((t) => t.name);
-  for (const expected of ['markets', 'instruments', 'candles', 'opportunities', 'strategies', 'backtest_results', 'provider_status']) {
+  for (const expected of ['markets', 'instruments', 'candles', 'opportunities', 'strategies', 'backtest_results', 'provider_status', 'users']) {
     assert.ok(names.includes(expected), `missing table ${expected}`);
   }
   db.close();

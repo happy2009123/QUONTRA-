@@ -34,6 +34,15 @@ import { AppError } from '../lib/errors.ts';
 import { SUPPORTED_TIMEFRAMES, type Timeframe } from '../lib/time.ts';
 import { queryValidator } from '../lib/validate.ts';
 import {
+  clearSessionCookie,
+  getSessionUser,
+  hashPassword,
+  requireSession,
+  setSessionCookie,
+  verifyPassword,
+} from '../auth/auth.ts';
+import { getUserById, insertUser, toPublicUser, updateLastLogin } from '../db/repoAuth.ts';
+import {
   getDataHealthApi,
   getCandlesApi,
   getIndicatorsApi,
@@ -91,6 +100,85 @@ function ok(body: unknown, envelopeOptions?: { isDemo?: boolean; meta?: unknown 
 export function buildRouter(deps: RouterDeps): Router {
   const { db, registry, config } = deps;
   const router = new Router();
+
+  // ── Auth ───────────────────────────────────────────────────────────────
+  const LOGIN_WINDOW_MS = 15 * 60_000;
+  const LOGIN_MAX_FAILURES = 10;
+  const loginFailures = new Map<string, { count: number; resetAt: number }>();
+
+  function normalizeEmail(raw: string): string {
+    return raw.trim().toLowerCase();
+  }
+
+  router.post('/api/auth/register', (ctx) => {
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const v = validatorFromBody(body);
+    const emailRaw = v.string('email', { required: true, maxLength: 254 });
+    const password = v.string('password', { required: true, maxLength: 128 });
+    const displayName = v.string('displayName', { maxLength: 60 }) ?? null;
+    v.throwIfInvalid();
+
+    const email = normalizeEmail(emailRaw!);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new AppError('VALIDATION_ERROR', 'Enter a valid email address');
+    }
+    if (password!.length < 8) {
+      throw new AppError('VALIDATION_ERROR', 'Password must be at least 8 characters');
+    }
+    if (getUserById(db, email)) {
+      throw new AppError('CONFLICT', 'An account with this email already exists');
+    }
+
+    const now = new Date().toISOString();
+    insertUser(db, {
+      id: email,
+      passwordHash: hashPassword(password!),
+      displayName: displayName === null ? null : displayName.trim() || null,
+      createdAt: now,
+    });
+    setSessionCookie(ctx, config, email);
+    return { status: 201, body: toPublicUser(getUserById(db, email)!) };
+  });
+
+  router.post('/api/auth/login', (ctx) => {
+    const body = (ctx.body ?? {}) as Record<string, unknown>;
+    const v = validatorFromBody(body);
+    const emailRaw = v.string('email', { required: true, maxLength: 254 });
+    const password = v.string('password', { required: true, maxLength: 128 });
+    v.throwIfInvalid();
+
+    const email = normalizeEmail(emailRaw!);
+    const now = Date.now();
+    const failure = loginFailures.get(email);
+    if (failure && failure.resetAt > now && failure.count >= LOGIN_MAX_FAILURES) {
+      throw new AppError('RATE_LIMITED', 'Too many failed sign-in attempts — try again in a few minutes');
+    }
+
+    const user = getUserById(db, email);
+    if (!user || !verifyPassword(password!, user.password_hash)) {
+      const entry = failure && failure.resetAt > now ? failure : { count: 0, resetAt: now + LOGIN_WINDOW_MS };
+      entry.count += 1;
+      loginFailures.set(email, entry);
+      throw new AppError('UNAUTHORIZED', 'Email or password is incorrect');
+    }
+
+    loginFailures.delete(email);
+    const stamp = new Date().toISOString();
+    updateLastLogin(db, email, stamp);
+    setSessionCookie(ctx, config, email);
+    return ok(toPublicUser(user));
+  });
+
+  router.post('/api/auth/logout', (ctx) => {
+    clearSessionCookie(ctx, config);
+    return ok({ signedOut: true });
+  });
+
+  router.get('/api/auth/session', (ctx) => {
+    const user = getSessionUser(ctx, db, config);
+    if (!user) throw new AppError('UNAUTHORIZED', 'No active session');
+    return ok({ user });
+  });
 
   // ── Markets ────────────────────────────────────────────────────────────
   router.get('/api/markets', () => {
@@ -636,42 +724,32 @@ export function buildRouter(deps: RouterDeps): Router {
 
   // ── Paper Trading ──────────────────────────────────────────────────────
   router.get('/api/paper-account', (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     const account = getPaperAccount(db, userId);
     if (!account) return ok(upsertPaperAccount(db, userId));
     return ok(account);
   });
 
   router.get('/api/paper-portfolio', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     await sweepPendingOrders(userId);
     return ok(getPortfolioSummary(db, userId));
   });
 
   router.get('/api/paper-positions', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     await sweepPendingOrders(userId);
     return ok(getOpenPositions(db, userId));
   });
 
   router.get('/api/paper-orders', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     await sweepPendingOrders(userId);
     return ok(getOrderHistory(db, userId));
   });
 
   router.get('/api/paper-strategy-performance', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     await sweepPendingOrders(userId);
 
     interface OrderAgg {
@@ -777,32 +855,24 @@ export function buildRouter(deps: RouterDeps): Router {
   });
 
   router.get('/api/paper-transactions', (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     return ok(getTransactionHistory(db, userId));
   });
 
   router.post('/api/paper-account-reset', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     resetPaperAccount(db, userId);
     return ok({ reset: true, message: 'Paper account reset. All positions closed, transactions cleared, balances restored to initial capital.' });
   });
 
   router.get('/api/paper-wallet', (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     const wallet = getWalletBalance(db, userId);
     return ok(wallet);
   });
 
   router.get('/api/paper-trades', (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     // paper_trades has no account column — scope through the originating order
     // (trade ids are `trade-${orderId}` and every fill writes one).
     const rows = db
@@ -817,9 +887,7 @@ export function buildRouter(deps: RouterDeps): Router {
   });
 
   router.get('/api/paper-account-full', (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
     const account = getPaperAccount(db, userId);
     const wallet = getWalletBalance(db, userId);
     const positions = getOpenPositions(db, userId);
@@ -1120,9 +1188,7 @@ export function buildRouter(deps: RouterDeps): Router {
   type OrderType = (typeof ORDER_TYPES)[number];
 
   router.post('/api/paper-order', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
-    v.throwIfInvalid();
+    const userId = requireSession(ctx, db, config).userId;
 
     const body = (ctx.body ?? {}) as Record<string, unknown>;
     const instrumentId = typeof body.instrumentId === 'string' ? body.instrumentId : '';
@@ -1233,14 +1299,12 @@ export function buildRouter(deps: RouterDeps): Router {
 
   // ── Order Modification ───────────────────────────────────────────────────
   router.post('/api/paper-order/modify', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    const userId = requireSession(ctx, db, config).userId;
     const body = (ctx.body ?? {}) as Record<string, unknown>;
     const orderId = typeof body.orderId === 'string' ? body.orderId : '';
     const newPrice = typeof body.price === 'number' && Number.isFinite(body.price) ? body.price : null;
     const newQuantity =
       typeof body.quantity === 'number' && Number.isInteger(body.quantity) && body.quantity > 0 ? body.quantity : null;
-    v.throwIfInvalid();
 
     if (!orderId) throw new AppError('VALIDATION_ERROR', 'orderId is required');
     if (newPrice === null && newQuantity === null) {
@@ -1330,11 +1394,9 @@ export function buildRouter(deps: RouterDeps): Router {
   });
 
   router.post('/api/paper-cancel', async (ctx) => {
-    const v = queryValidator(ctx.query);
-    const userId = v.string('userId', { required: false, maxLength: 64 }) ?? 'desk@quantora.demo';
+    const userId = requireSession(ctx, db, config).userId;
     const body = ctx.body as { orderId?: unknown } | undefined;
     const orderId = typeof body?.orderId === 'string' ? body.orderId : '';
-    v.throwIfInvalid();
     if (!orderId) throw new AppError('VALIDATION_ERROR', 'orderId is required');
 
     // A resting LIMIT order may have been crossed while the user was deciding

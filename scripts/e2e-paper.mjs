@@ -17,18 +17,51 @@ function check(name, cond, detail) {
   }
 }
 
+/** Session cookie captured by register/login and sent with every call. */
+let cookie = '';
+
+function authHeaders(extra = {}) {
+  return cookie ? { Cookie: cookie, ...extra } : extra;
+}
+
 const get = async (p) => {
-  const r = await fetch(base + p);
-  return { status: r.status, body: await r.json() };
+  const r = await fetch(base + p, { headers: authHeaders() });
+  return { status: r.status, body: await r.json(), headers: r.headers };
 };
 const post = async (p, b) => {
   const r = await fetch(base + p, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(b),
   });
-  return { status: r.status, body: await r.json() };
+  return { status: r.status, body: await r.json(), headers: r.headers };
 };
+
+// 0. AUTH bootstrap — register the demo desk (or log in) and keep the cookie
+console.log('\n0. AUTH bootstrap');
+const AUTH_EMAIL = 'desk@quantora.demo';
+const AUTH_PASSWORD = 'e2e-password-1';
+let auth = await post('/api/auth/register', {
+  email: AUTH_EMAIL,
+  password: AUTH_PASSWORD,
+  displayName: 'Research Desk',
+});
+if (auth.status !== 201) {
+  auth = await post('/api/auth/login', { email: AUTH_EMAIL, password: AUTH_PASSWORD });
+}
+check(
+  'signed in via register or login',
+  (auth.status === 201 || auth.status === 200) && !!auth.body?.data,
+  JSON.stringify(auth.body).slice(0, 200),
+);
+cookie = (auth.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+check('session cookie captured', cookie.startsWith('quantora_session=') && cookie.length > 20, cookie.slice(0, 48));
+const bootSession = await get('/api/auth/session');
+check(
+  'session endpoint confirms identity',
+  bootSession.status === 200 && bootSession.body?.data?.user?.email === AUTH_EMAIL,
+  JSON.stringify(bootSession.body).slice(0, 200),
+);
 
 // Learn the current market price for eq-reliance
 const q = await get('/api/quotes?ids=eq-reliance');
@@ -288,6 +321,30 @@ check('performance row exists', !!perfRow, JSON.stringify(r.body?.data).slice(0,
 check('performance counts the order', perfRow && perfRow.orders >= 1, JSON.stringify(perfRow));
 check('performance counts filled order + opened trade', perfRow && perfRow.filled >= 1 && perfRow.trades >= 1, JSON.stringify(perfRow));
 check('performance resolves playbook name', perfRow && perfRow.name === 'EMA Trend Pullback', JSON.stringify(perfRow));
+
+// 18. AUTH lifecycle: anonymous blocked, logout clears, re-login restores
+console.log('\n18. AUTH lifecycle');
+const anonRes = await fetch(base + '/api/paper-portfolio');
+const anonBody = await anonRes.json().catch(() => ({}));
+check(
+  'anonymous paper 401',
+  anonRes.status === 401 && anonBody?.error?.code === 'UNAUTHORIZED',
+  `status ${anonRes.status} ${JSON.stringify(anonBody).slice(0, 160)}`,
+);
+
+const out = await post('/api/auth/logout', {});
+check('logout 200', out.status === 200, JSON.stringify(out.body));
+const cleared = out.headers.get('set-cookie') ?? '';
+check('logout expires cookie', cleared.includes('Max-Age=0'), cleared.slice(0, 140));
+cookie = cleared.split(';')[0] ?? '';
+const afterLogout = await fetch(base + '/api/paper-portfolio');
+check('paper blocked after logout', afterLogout.status === 401, `status ${afterLogout.status}`);
+
+const rel = await post('/api/auth/login', { email: AUTH_EMAIL, password: AUTH_PASSWORD });
+check('re-login 200', rel.status === 200 && !!rel.body?.data, JSON.stringify(rel.body).slice(0, 200));
+cookie = (rel.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+const restored = await get('/api/paper-portfolio');
+check('access restored after login', restored.status === 200 && !!restored.body?.data, `status ${restored.status}`);
 
 srv.close();
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

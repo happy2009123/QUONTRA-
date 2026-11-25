@@ -11,7 +11,7 @@
  *    as verified until the validation service has approved it.
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA_SQL = `
 -- ── Reference: markets ────────────────────────────────────────────────
@@ -389,6 +389,15 @@ CREATE TABLE IF NOT EXISTS system_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON system_logs(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_level ON system_logs(level, ts DESC);
+
+-- ── Platform user accounts (paper-trading sessions) ───────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id             TEXT PRIMARY KEY,               -- normalized (lowercase) email
+  password_hash  TEXT NOT NULL,                  -- scrypt$N$r$p$salt$hash
+  display_name   TEXT,
+  created_at     TEXT NOT NULL,
+  last_login_at  TEXT
+);
 
 -- ── Migration bookkeeping ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS schema_migrations (
