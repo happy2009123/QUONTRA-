@@ -17,6 +17,7 @@ import {
 } from '@/components/ui';
 import type { Column, SelectOption, Tone } from '@/components/ui';
 import { MARKET_LABELS } from '@/data/universe';
+import { WatchlistStar } from '@/components/WatchlistStar';
 import { TIMEFRAMES } from '@/models';
 import type {
   Instrument,
@@ -140,6 +141,7 @@ const columns: Column<ScanRow>[] = [
     cell: (row) => (
       <div className="flex min-w-0 flex-col">
         <span className="flex items-center gap-1.5">
+          <WatchlistStar instrumentId={row.instrument.id} />
           <span className="font-semibold text-fg">{row.instrument.symbol}</span>
           {row.instrument.restriction && (
             <Badge tone="warning" title={row.instrument.restriction.summary}>

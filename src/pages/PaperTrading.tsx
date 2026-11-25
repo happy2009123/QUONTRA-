@@ -20,6 +20,7 @@ import {
 } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import { INSTRUMENT_BY_ID, demoSource } from '@/data/universe';
+import { useToasts } from '@/state/ToastContext';
 import { formatDateTime, formatPrice } from '@/lib/format';
 
 type OrderType = 'MARKET' | 'LIMIT' | 'STOP' | 'STOP_LOSS' | 'TAKE_PROFIT';
@@ -203,6 +204,7 @@ export default function PaperTrading() {
   const [modQty, setModQty] = useState('');
   const [modBusy, setModBusy] = useState(false);
   const [modError, setModError] = useState<string | null>(null);
+  const { push } = useToasts();
 
   const load = useCallback(async () => {
     try {
@@ -327,13 +329,21 @@ export default function PaperTrading() {
           kind: 'success',
           text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}${restingNote}${playbookNote}.`,
         });
+        push({
+          tone: 'success',
+          title: `Order ${order.status}`,
+          message: `${order.direction} ${order.quantity}${priceLabel}${restingNote}`,
+        });
         setTimeout(() => setFeedback(null), 6000);
         await load();
       } else {
-        setFeedback({ kind: 'error', text: payload.error?.message ?? 'Failed to place order' });
+        const message = payload.error?.message ?? 'Failed to place order';
+        setFeedback({ kind: 'error', text: message });
+        push({ tone: 'error', title: 'Order failed', message });
       }
     } catch {
       setFeedback({ kind: 'error', text: 'Network error placing order' });
+      push({ tone: 'error', title: 'Order failed', message: 'Network error placing order' });
     } finally {
       setTicketBusy(false);
     }
@@ -355,9 +365,16 @@ export default function PaperTrading() {
       });
       const payload = (await res.json()) as Envelope<unknown>;
       if (!res.ok) throw new Error(payload.error?.message ?? 'Close failed');
+      push({
+        tone: 'success',
+        title: 'Position closed',
+        message: `${INSTRUMENT_BY_ID[row.instrument_id]?.symbol ?? row.instrument_id} sold at market`,
+      });
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Close failed');
+      const message = e instanceof Error ? e.message : 'Close failed';
+      setError(message);
+      push({ tone: 'error', title: 'Close failed', message });
     } finally {
       setClosing(null);
     }
@@ -373,9 +390,12 @@ export default function PaperTrading() {
       });
       const payload = (await res.json()) as Envelope<unknown>;
       if (!res.ok) throw new Error(payload.error?.message ?? 'Cancel failed');
+      push({ tone: 'success', title: 'Order cancelled', message: 'Reserved capital was released.' });
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Cancel failed');
+      const message = e instanceof Error ? e.message : 'Cancel failed';
+      setError(message);
+      push({ tone: 'error', title: 'Cancel failed', message });
     } finally {
       setCancelling(null);
     }
@@ -401,9 +421,12 @@ export default function PaperTrading() {
       const payload = (await res.json()) as Envelope<unknown>;
       if (!res.ok) throw new Error(payload.error?.message ?? 'Modify failed');
       setModifying(null);
+      push({ tone: 'success', title: 'Order updated', message: `Quantity ${modQty} · price ${modPrice}` });
       await load();
     } catch (e) {
-      setModError(e instanceof Error ? e.message : 'Modify failed');
+      const message = e instanceof Error ? e.message : 'Modify failed';
+      setModError(message);
+      push({ tone: 'error', title: 'Modify failed', message });
     } finally {
       setModBusy(false);
     }

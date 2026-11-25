@@ -22,8 +22,10 @@ import { OverviewChart } from '@/components/charts/OverviewChart';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { DashboardQuotes } from '@/components/DashboardQuotes';
 import { DashboardSideRail } from '@/components/DashboardSideRail';
+import { WatchlistCard } from '@/components/WatchlistCard';
 import { api } from '@/api/client';
 import { useAsync } from '@/state/useAsync';
+import { useToasts } from '@/state/ToastContext';
 import type {
   EconomicEvent,
   InstrumentQuote,
@@ -84,6 +86,8 @@ export default function Dashboard() {
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
         <div className="flex min-w-0 flex-col gap-4">
           <DashboardQuotes />
+
+          <WatchlistCard />
 
           <OverviewSection />
           <HeatmapSection />
@@ -506,6 +510,7 @@ function OrderPlacementSection() {
   const [instrumentId, setInstrumentId] = useState('eq-reliance');
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { push } = useToasts();
 
   const instruments = [
     { value: 'eq-reliance', label: 'RELIANCE EQ' },
@@ -570,13 +575,21 @@ function OrderPlacementSection() {
           kind: 'success',
           text: `Order ${order.status}: ${order.direction} ${order.quantity}${priceLabel}${restingNote}. Available: ₹${Number(available ?? 0).toLocaleString()}`,
         });
+        push({
+          tone: 'success',
+          title: `Order ${order.status}`,
+          message: `${order.direction} ${order.quantity}${priceLabel}${restingNote}`,
+        });
         setTimeout(() => setFeedback(null), 5000);
         window.dispatchEvent(new Event('paper-updated'));
       } else {
-        setFeedback({ kind: 'error', text: payload.error?.message ?? 'Failed to place order' });
+        const message = payload.error?.message ?? 'Failed to place order';
+        setFeedback({ kind: 'error', text: message });
+        push({ tone: 'error', title: 'Order failed', message });
       }
     } catch {
       setFeedback({ kind: 'error', text: 'Network error placing order' });
+      push({ tone: 'error', title: 'Order failed', message: 'Network error placing order' });
     } finally {
       setLoading(false);
     }
@@ -742,6 +755,7 @@ function PaperPortfolioSection() {
   const [modQty, setModQty] = useState('');
   const [modBusy, setModBusy] = useState(false);
   const [modError, setModError] = useState<string | null>(null);
+  const { push } = useToasts();
 
   const load = useCallback(async () => {
     try {
@@ -786,9 +800,12 @@ function PaperPortfolioSection() {
       });
       const payload = (await res.json()) as { data?: { capitalReturned?: number }; error?: { message?: string } };
       if (!res.ok) throw new Error(payload.error?.message ?? 'Cancel failed');
+      push({ tone: 'success', title: 'Order cancelled', message: 'Reserved capital was released.' });
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Cancel failed');
+      const message = e instanceof Error ? e.message : 'Cancel failed';
+      setError(message);
+      push({ tone: 'error', title: 'Cancel failed', message });
     } finally {
       setCancelling(null);
     }
@@ -809,9 +826,16 @@ function PaperPortfolioSection() {
       });
       const payload = (await res.json()) as { data?: { status?: string }; error?: { message?: string } };
       if (!res.ok) throw new Error(payload.error?.message ?? 'Close failed');
+      push({
+        tone: 'success',
+        title: 'Position closed',
+        message: `${INSTRUMENT_BY_ID[row.instrument_id]?.symbol ?? row.instrument_id} sold at market`,
+      });
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Close failed');
+      const message = e instanceof Error ? e.message : 'Close failed';
+      setError(message);
+      push({ tone: 'error', title: 'Close failed', message });
     } finally {
       setClosing(null);
     }
@@ -841,9 +865,12 @@ function PaperPortfolioSection() {
       const payload = (await res.json()) as { data?: unknown; error?: { message?: string } };
       if (!res.ok) throw new Error(payload.error?.message ?? 'Modify failed');
       setModifying(null);
+      push({ tone: 'success', title: 'Order updated', message: `Quantity ${modQty} · price ${modPrice}` });
       await load();
     } catch (e) {
-      setModError(e instanceof Error ? e.message : 'Modify failed');
+      const message = e instanceof Error ? e.message : 'Modify failed';
+      setModError(message);
+      push({ tone: 'error', title: 'Modify failed', message });
     } finally {
       setModBusy(false);
     }

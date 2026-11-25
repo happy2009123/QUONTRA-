@@ -27,6 +27,7 @@ import {
 import { api } from '@/api/client';
 import { useAsync } from '@/state/useAsync';
 import { useNotifications } from '@/state/NotificationsContext';
+import { useToasts } from '@/state/ToastContext';
 import { cn } from '@/lib/cn';
 import { formatTimestamp } from '@/lib/format';
 import type { NotificationKind } from '@/models';
@@ -74,6 +75,7 @@ export default function Notifications() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [draftPrefs, setDraftPrefs] = useState(preferences);
+  const { push } = useToasts();
 
   const visible = useMemo(
     () =>
@@ -96,6 +98,7 @@ export default function Notifications() {
     await savePreferences(draftPrefs);
     setSaving(false);
     setSaved(true);
+    push({ tone: 'success', title: 'Preferences saved', message: 'Alert channels updated for this account.' });
     window.setTimeout(() => setSaved(false), 2500);
   };
 

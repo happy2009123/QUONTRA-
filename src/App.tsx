@@ -3,6 +3,9 @@ import { AppShell } from '@/components/layout/AppShell';
 import { SettingsProvider } from '@/state/SettingsContext';
 import { NotificationsProvider } from '@/state/NotificationsContext';
 import { AuthProvider } from '@/state/AuthContext';
+import { ToastProvider } from '@/state/ToastContext';
+import { CommandPaletteProvider } from '@/state/CommandPaletteContext';
+import { WatchlistProvider } from '@/state/WatchlistContext';
 import { RequireAuth } from '@/state/RequireAuth';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
@@ -63,7 +66,13 @@ export default function App() {
     <SettingsProvider>
       <NotificationsProvider>
         <AuthProvider>
-          <RouterProvider router={router} />
+          <ToastProvider>
+            <WatchlistProvider>
+              <CommandPaletteProvider>
+                <RouterProvider router={router} />
+              </CommandPaletteProvider>
+            </WatchlistProvider>
+          </ToastProvider>
         </AuthProvider>
       </NotificationsProvider>
     </SettingsProvider>

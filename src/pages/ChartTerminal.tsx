@@ -20,6 +20,7 @@ import type { SelectOption } from '@/components/ui';
 import { INDICATOR_GROUPS, PriceChart } from '@/components/charts/PriceChart';
 import type { ChartStyle, IndicatorKey } from '@/components/charts/PriceChart';
 import { INSTRUMENTS, INSTRUMENT_BY_ID, MARKET_LABELS } from '@/data/universe';
+import { WatchlistStar } from '@/components/WatchlistStar';
 import { TIMEFRAME_SECONDS } from '@/data/marketData';
 import { TIMEFRAMES } from '@/models';
 import type { Timeframe } from '@/models';
@@ -454,7 +455,10 @@ export default function ChartTerminal() {
       >
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-[12px]">
-            <span className="font-semibold text-fg">{instrument.symbol}</span>
+            <span className="flex items-center gap-1.5">
+              <WatchlistStar instrumentId={activeId} />
+              <span className="font-semibold text-fg">{instrument.symbol}</span>
+            </span>
             <Badge tone="gold">{timeframe}</Badge>
             <span className="text-mut">
               {chartStyleLabel} · {range} · <span className="num">{sliced.length}</span> bars

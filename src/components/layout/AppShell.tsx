@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { DesktopSidebar } from './DesktopSidebar';
 import { TopBar } from './TopBar';
 import { MobileBottomNav } from './MobileBottomNav';
+import { CommandPalette } from './CommandPalette';
 
 export function AppShell() {
   const { pathname } = useLocation();
@@ -30,6 +31,7 @@ export function AppShell() {
         </main>
       </div>
       <MobileBottomNav />
+      <CommandPalette />
       <ScrollRestoration />
     </div>
   );

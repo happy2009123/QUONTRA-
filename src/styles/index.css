@@ -255,6 +255,21 @@
       transform: translateX(-50%) translateY(0) scale(1);
     }
   }
+
+  .toast-in {
+    animation: quantora-toast-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes quantora-toast-in {
+    from {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

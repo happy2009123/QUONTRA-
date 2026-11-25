@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Bell, ChevronDown, LogOut, Settings as SettingsIcon, User } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, Search, Settings as SettingsIcon, User } from 'lucide-react';
 import { marketStatusFor } from '@/data/universe';
 import { formatClock, formatDate } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { useNotifications } from '@/state/NotificationsContext';
 import { useAuth } from '@/state/AuthContext';
+import { useCommandPalette } from '@/state/CommandPaletteContext';
 import { ConnectionStatusDot } from '@/components/ui/StatusIndicator';
 import { Dropdown, DropdownItem, DropdownLabel } from '@/components/ui/Dropdown';
 import { Logo } from './Logo';
+
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPod|iPad/.test(navigator.platform);
 
 const MARKET_GROUPS = [
   { label: 'India', market: 'INDIAN_EQUITIES' as const },
@@ -30,6 +33,7 @@ export function TopBar() {
   const navigate = useNavigate();
   const { unreadCount } = useNotifications();
   const { user, logout } = useAuth();
+  const { openPalette } = useCommandPalette();
 
   const displayName = user?.displayName ?? user?.email.split('@')[0] ?? 'Account';
   const initials =
@@ -99,6 +103,20 @@ export function TopBar() {
           <p className="num text-[12.5px] font-medium leading-tight text-fg">{formatClock(now)} IST</p>
           <p className="text-[10px] leading-tight text-mut">{formatDate(now.toISOString())}</p>
         </div>
+
+        {/* Search */}
+        <button
+          type="button"
+          onClick={openPalette}
+          aria-label="Search instruments and pages"
+          className="flex h-8 items-center gap-2 rounded-[4px] border border-line bg-card px-2.5 text-[12px] text-mut transition-[background-color,border-color,color,scale] duration-150 ease-out hover:border-[#333c49] hover:text-fg motion-safe:active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-gold/70"
+        >
+          <Search size={13} aria-hidden />
+          <span className="hidden sm:inline">Search…</span>
+          <kbd className="num hidden rounded-[3px] border border-line bg-panel px-1 py-px text-[9.5px] text-mut-2 md:inline">
+            {IS_MAC ? '⌘K' : 'Ctrl K'}
+          </kbd>
+        </button>
 
         {/* Notifications */}
         <Link
